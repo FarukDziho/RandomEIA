@@ -1,0 +1,237 @@
+-- ============================================================
+-- EIA-860 Database Objects
+-- Run this entire script in SSMS before running PowerShell
+-- ============================================================
+
+USE YOUR_DATABASE_NAME;  -- Change this to your database name
+GO
+
+-- ============================================================
+-- Table 1: Main Plant Data Table
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'EIA860_PlantData')
+BEGIN
+    CREATE TABLE EIA860_PlantData (
+        Id                  INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear          INT,
+        UtilityId           NVARCHAR(50),
+        UtilityName         NVARCHAR(255),
+        PlantCode           NVARCHAR(50),
+        PlantName           NVARCHAR(255),
+        StreetAddress       NVARCHAR(255),
+        City                NVARCHAR(100),
+        State               NVARCHAR(10),
+        Zip                 NVARCHAR(20),
+        County              NVARCHAR(100),
+        Latitude            NVARCHAR(50),
+        Longitude           NVARCHAR(50),
+        NercRegion          NVARCHAR(50),
+        BalancingAuthority  NVARCHAR(100),
+        WaterSource         NVARCHAR(255),
+        PrimaryPurpose      NVARCHAR(100),
+        LoadedAt            DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created table: EIA860_PlantData';
+END
+ELSE
+    PRINT 'Table already exists: EIA860_PlantData';
+GO
+
+-- ============================================================
+-- Table 2: Staging Table
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'EIA860_PlantData_Staging')
+BEGIN
+    CREATE TABLE EIA860_PlantData_Staging (
+        ReportYear          INT,
+        UtilityId           NVARCHAR(50),
+        UtilityName         NVARCHAR(255),
+        PlantCode           NVARCHAR(50),
+        PlantName           NVARCHAR(255),
+        StreetAddress       NVARCHAR(255),
+        City                NVARCHAR(100),
+        State               NVARCHAR(10),
+        Zip                 NVARCHAR(20),
+        County              NVARCHAR(100),
+        Latitude            NVARCHAR(50),
+        Longitude           NVARCHAR(50),
+        NercRegion          NVARCHAR(50),
+        BalancingAuthority  NVARCHAR(100),
+        WaterSource         NVARCHAR(255),
+        PrimaryPurpose      NVARCHAR(100),
+        LoadedAt            DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created table: EIA860_PlantData_Staging';
+END
+ELSE
+    PRINT 'Table already exists: EIA860_PlantData_Staging';
+GO
+
+-- ============================================================
+-- Table 3: Load Log Table
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'EIA860_LoadLog')
+BEGIN
+    CREATE TABLE EIA860_LoadLog (
+        LogId               INT IDENTITY(1,1) PRIMARY KEY,
+        RunDate             DATETIME DEFAULT GETDATE(),
+        ReportYear          INT,
+        Status              NVARCHAR(50),
+        RowsInStaging       INT,
+        RowsInserted        INT,
+        RowsUpdated         INT,
+        RowsSkipped         INT,
+        TotalRowsInTable    INT,
+        ScriptVersion       NVARCHAR(50),
+        MachineName         NVARCHAR(100),
+        RunByUser           NVARCHAR(100),
+        DownloadUrl         NVARCHAR(500),
+        FilePath            NVARCHAR(500),
+        ErrorMessage        NVARCHAR(MAX),
+        DurationSeconds     INT
+    );
+    PRINT 'Created table: EIA860_LoadLog';
+END
+ELSE
+    PRINT 'Table already exists: EIA860_LoadLog';
+GO
+
+-- ============================================================
+-- Unique Constraint on Main Table (prevents duplicates)
+-- ============================================================
+IF NOT EXISTS (
+    SELECT * FROM sys.indexes 
+    WHERE name = 'UQ_EIA860_Plant' 
+    AND object_id = OBJECT_ID('EIA860_PlantData'))
+BEGIN
+    ALTER TABLE EIA860_PlantData
+    ADD CONSTRAINT UQ_EIA860_Plant 
+    UNIQUE (ReportYear, PlantCode);
+    PRINT 'Created unique constraint: UQ_EIA860_Plant';
+END
+ELSE
+    PRINT 'Unique constraint already exists: UQ_EIA860_Plant';
+GO
+
+-- ============================================================
+-- Stored Procedure: Merge Staging into Main Table
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures WHERE name = 'usp_MergeEIA860PlantData')
+    DROP PROCEDURE usp_MergeEIA860PlantData;
+GO
+
+CREATE PROCEDURE usp_MergeEIA860PlantData
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @InsertCount  INT = 0;
+    DECLARE @UpdateCount  INT = 0;
+    DECLARE @SkipCount    INT = 0;
+    DECLARE @StagingCount INT = 0;
+
+    -- Temp table to capture MERGE output
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    SELECT @StagingCount = COUNT(*) FROM EIA860_PlantData_Staging;
+
+    -- Perform MERGE
+    MERGE EIA860_PlantData AS target
+    USING EIA860_PlantData_Staging AS source
+        ON target.ReportYear = source.ReportYear
+        AND target.PlantCode  = source.PlantCode
+
+    WHEN MATCHED AND (
+        ISNULL(target.UtilityId,'')          != ISNULL(source.UtilityId,'')          OR
+        ISNULL(target.UtilityName,'')        != ISNULL(source.UtilityName,'')        OR
+        ISNULL(target.PlantName,'')          != ISNULL(source.PlantName,'')          OR
+        ISNULL(target.StreetAddress,'')      != ISNULL(source.StreetAddress,'')      OR
+        ISNULL(target.City,'')               != ISNULL(source.City,'')               OR
+        ISNULL(target.State,'')              != ISNULL(source.State,'')              OR
+        ISNULL(target.Zip,'')                != ISNULL(source.Zip,'')                OR
+        ISNULL(target.County,'')             != ISNULL(source.County,'')             OR
+        ISNULL(target.Latitude,'')           != ISNULL(source.Latitude,'')           OR
+        ISNULL(target.Longitude,'')          != ISNULL(source.Longitude,'')          OR
+        ISNULL(target.NercRegion,'')         != ISNULL(source.NercRegion,'')         OR
+        ISNULL(target.BalancingAuthority,'') != ISNULL(source.BalancingAuthority,'') OR
+        ISNULL(target.WaterSource,'')        != ISNULL(source.WaterSource,'')        OR
+        ISNULL(target.PrimaryPurpose,'')     != ISNULL(source.PrimaryPurpose,'')
+    )
+    THEN UPDATE SET
+        target.UtilityId          = source.UtilityId,
+        target.UtilityName        = source.UtilityName,
+        target.PlantName          = source.PlantName,
+        target.StreetAddress      = source.StreetAddress,
+        target.City               = source.City,
+        target.State              = source.State,
+        target.Zip                = source.Zip,
+        target.County             = source.County,
+        target.Latitude           = source.Latitude,
+        target.Longitude          = source.Longitude,
+        target.NercRegion         = source.NercRegion,
+        target.BalancingAuthority = source.BalancingAuthority,
+        target.WaterSource        = source.WaterSource,
+        target.PrimaryPurpose     = source.PrimaryPurpose,
+        target.LoadedAt           = GETDATE()
+
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (
+        ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+        StreetAddress, City, State, Zip, County, Latitude, Longitude,
+        NercRegion, BalancingAuthority, WaterSource, PrimaryPurpose
+    )
+    VALUES (
+        source.ReportYear, source.UtilityId, source.UtilityName,
+        source.PlantCode, source.PlantName, source.StreetAddress,
+        source.City, source.State, source.Zip, source.County,
+        source.Latitude, source.Longitude, source.NercRegion,
+        source.BalancingAuthority, source.WaterSource, source.PrimaryPurpose
+    )
+
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    -- Count actions
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction = 'INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction = 'UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    -- Rows skipped = matched but unchanged
+    SET @SkipCount = @StagingCount - ISNULL(@InsertCount,0) - ISNULL(@UpdateCount,0);
+
+    -- Return results to PowerShell
+    SELECT
+        ISNULL(@InsertCount, 0)                     AS RowsInserted,
+        ISNULL(@UpdateCount, 0)                     AS RowsUpdated,
+        ISNULL(@SkipCount, 0)                       AS RowsSkipped,
+        @StagingCount                               AS RowsInStaging,
+        (SELECT COUNT(*) FROM EIA860_PlantData)     AS TotalRowsInTable;
+
+    -- Clear staging table
+    TRUNCATE TABLE EIA860_PlantData_Staging;
+
+END
+GO
+
+-- ============================================================
+-- Verify Everything Was Created
+-- ============================================================
+SELECT 
+    name        AS ObjectName,
+    type_desc   AS ObjectType,
+    create_date AS CreatedDate
+FROM sys.objects
+WHERE name IN (
+    'EIA860_PlantData',
+    'EIA860_PlantData_Staging',
+    'EIA860_LoadLog',
+    'usp_MergeEIA860PlantData',
+    'UQ_EIA860_Plant'
+)
+ORDER BY type_desc, name;
+GO
+
+PRINT '============================================';
+PRINT 'All EIA-860 database objects created!';
+PRINT 'You are ready to run the PowerShell script.';
+PRINT '============================================';
