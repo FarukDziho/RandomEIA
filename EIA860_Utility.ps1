@@ -1,13 +1,15 @@
 # ============================================================
 # EIA860_Utility.ps1 - Load Schedule 1 Utility Data
+# Version 2.1
+# Tab: 'Utility'
 # ============================================================
 param(
-    [int]$ReportYear  = (Get-Date).Year - 1,
-    [bool]$ManualMode = $false,
+    [int]$ReportYear     = (Get-Date).Year - 1,
+    [bool]$ManualMode    = $false,
     [string]$ExtractPath = ""
 )
 
-$scriptVersion = "2.0"
+$scriptVersion = "2.1"
 $startTime     = Get-Date
 . "E:\Scripts\EIA860_Shared.ps1"
 
@@ -35,14 +37,19 @@ if (-not $ExtractPath) {
     }
 }
 
-$utilFile = Get-ChildItem $extractPath -Filter "1*Utility*.xlsx" | Select-Object -First 1
+# Find Utility file - case insensitive
+$utilFile = Find-EIAFile $extractPath "1_*tility*.xlsx"
 if (-not $utilFile) {
-    Write-Warning "Utility file not found - skipping"
+    $errMsg = "Utility file not found in $extractPath"
+    Write-Warning $errMsg
     Write-EIALog -conn $conn -logId $logId -status "Skipped" -reportYear $ReportYear `
-                 -errorMessage "Utility file not found" -startTime $startTime
+                 -errorMessage $errMsg -startTime $startTime
     $conn.Close(); exit 0
 }
 Write-Host "Found: $($utilFile.Name)" -ForegroundColor Green
+
+# Show columns for debugging
+Show-ColumnNames $utilFile.FullName "Utility"
 
 $dt = New-DataTable @("ReportYear","UtilityId","UtilityName","StreetAddress",
       "City","State","Zip","Phone","EntityType")
@@ -52,7 +59,7 @@ try {
     $tabCount = 0
     foreach ($row in $data) {
         if (-not $row.'Utility ID') { continue }
-        $dr = $dt.NewRow()
+        $dr                  = $dt.NewRow()
         $dr["ReportYear"]    = $ReportYear
         $dr["UtilityId"]     = Get-Val $row 'Utility ID'
         $dr["UtilityName"]   = Get-Val $row 'Utility Name'
@@ -67,7 +74,11 @@ try {
     }
     Write-Host "  Read $tabCount rows" -ForegroundColor Gray
 } catch {
-    Write-Warning "Utility read error: $_"
+    $errMsg = "Utility read error: $_"
+    Write-Warning $errMsg
+    Write-EIALog -conn $conn -logId $logId -status "Failed" -reportYear $ReportYear `
+                 -errorMessage $errMsg -startTime $startTime
+    $conn.Close(); exit 1
 }
 
 Load-Staging $conn $dt "EIA.EIA860_UtilityData_Staging"
@@ -79,13 +90,5 @@ Write-EIALog -conn $conn -logId $logId -status "Success" -reportYear $ReportYear
     -totalRows $result.TotalRows -tabsProcessed "Utility" -startTime $startTime
 
 $duration = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
-Write-Host "`n=====================================" -ForegroundColor Cyan
-Write-Host " Utility Load Complete"                -ForegroundColor Cyan
-Write-Host " Rows in File:   $($dt.Rows.Count)"   -ForegroundColor White
-Write-Host " Rows Inserted:  $($result.RowsInserted)" -ForegroundColor Green
-Write-Host " Rows Updated:   $($result.RowsUpdated)"  -ForegroundColor Yellow
-Write-Host " Total in Table: $($result.TotalRows)"    -ForegroundColor White
-Write-Host " Duration:       $duration seconds"       -ForegroundColor White
-Write-Host "=====================================" -ForegroundColor Cyan
-
+Write-TabSummary "Utility" $dt.Rows.Count $result.RowsInserted $result.RowsUpdated $result.TotalRows $duration @("Utility")
 $conn.Close()

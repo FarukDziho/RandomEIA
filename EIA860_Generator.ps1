@@ -1,13 +1,15 @@
 # ============================================================
 # EIA860_Generator.ps1 - Load Schedule 3.1 Generator Data
+# Version 2.1
+# Tabs: 'Operable', 'Proposed', 'Retired and Canceled'
 # ============================================================
 param(
-    [int]$ReportYear  = (Get-Date).Year - 1,
-    [bool]$ManualMode = $false,
+    [int]$ReportYear     = (Get-Date).Year - 1,
+    [bool]$ManualMode    = $false,
     [string]$ExtractPath = ""
 )
 
-$scriptVersion = "2.0"
+$scriptVersion = "2.1"
 $startTime     = Get-Date
 . "E:\Scripts\EIA860_Shared.ps1"
 
@@ -35,13 +37,20 @@ if (-not $ExtractPath) {
     }
 }
 
-$genFile = Get-ChildItem $extractPath -Filter "3_1_Generator*.xlsx" | Select-Object -First 1
+# Find Generator file - case insensitive
+$genFile = Find-EIAFile $extractPath "3_1_*enerator*.xlsx"
 if (-not $genFile) {
+    $errMsg = "Generator file not found in $extractPath"
     Write-EIALog -conn $conn -logId $logId -status "Failed" -reportYear $ReportYear `
-                 -errorMessage "Generator file not found" -startTime $startTime
-    $conn.Close(); exit 1
+                 -errorMessage $errMsg -startTime $startTime
+    Write-Error $errMsg; $conn.Close(); exit 1
 }
 Write-Host "Found: $($genFile.Name)" -ForegroundColor Green
+
+# Get actual sheet names
+$availableSheets = Get-ExcelSheetNames $genFile.FullName
+Write-Host "Available tabs:" -ForegroundColor Gray
+$availableSheets | ForEach-Object { Write-Host "  '$_'" -ForegroundColor Gray }
 
 $dt = New-DataTable @("ReportYear","UtilityId","UtilityName","PlantCode","PlantName",
       "State","County","GeneratorId","UnitCode","OwnershipType","Duct","Topping",
@@ -50,15 +59,36 @@ $dt = New-DataTable @("ReportYear","UtilityId","UtilityName","PlantCode","PlantN
       "EnergySource4","EnergySource5","EnergySource6","NameplateCapacityMW",
       "SummerCapacityMW","WinterCapacityMW","StatusTab")
 
+# Exact tab names confirmed from EIA 2023 file
+$tabsToLoad = @("Operable","Proposed","Retired and Canceled")
 $tabsLoaded = @()
-foreach ($tab in @("Operable","Proposed","Retired and Canceled")) {
+
+foreach ($tab in $tabsToLoad) {
+    # Find matching tab (exact or close match)
+    $actualTab = $availableSheets | Where-Object { $_ -eq $tab } | Select-Object -First 1
+    if (-not $actualTab) {
+        $actualTab = $availableSheets | Where-Object { $_ -like "*$($tab.Split(' ')[0])*" } | Select-Object -First 1
+    }
+    if (-not $actualTab) {
+        Write-Warning "Tab '$tab' not found - skipping"
+        continue
+    }
+
+    Write-Host "  Reading tab: '$actualTab'" -ForegroundColor Gray
+    # Show columns on first tab only
+    if ($tab -eq "Operable") { Show-ColumnNames $genFile.FullName $actualTab }
+
     try {
-        $data     = Import-Excel -Path $genFile.FullName -WorksheetName $tab -StartRow 2
-        $tabLabel = if ($tab -eq "Retired and Canceled") { "Retired" } else { $tab }
+        $data     = Import-Excel -Path $genFile.FullName -WorksheetName $actualTab -StartRow 2
+        $tabLabel = switch -Wildcard ($actualTab) {
+            "*Retired*"  { "Retired"  }
+            "*Proposed*" { "Proposed" }
+            default      { "Operable" }
+        }
         $tabCount = 0
         foreach ($row in $data) {
             if (-not $row.'Plant Code') { continue }
-            $dr = $dt.NewRow()
+            $dr                        = $dt.NewRow()
             $dr["ReportYear"]          = $ReportYear
             $dr["UtilityId"]           = Get-Val $row 'Utility ID'
             $dr["UtilityName"]         = Get-Val $row 'Utility Name'
@@ -91,10 +121,10 @@ foreach ($tab in @("Operable","Proposed","Retired and Canceled")) {
             $dt.Rows.Add($dr)
             $tabCount++
         }
-        $tabsLoaded += "$tab($tabCount)"
-        Write-Host "  Tab '$tab': $tabCount rows" -ForegroundColor Gray
+        $tabsLoaded += "$actualTab($tabCount)"
+        Write-Host "  Tab '$actualTab': $tabCount rows" -ForegroundColor Gray
     } catch {
-        Write-Warning "Tab '$tab' error: $_"
+        Write-Warning "Tab '$actualTab' error: $_"
     }
 }
 
@@ -107,14 +137,5 @@ Write-EIALog -conn $conn -logId $logId -status "Success" -reportYear $ReportYear
     -totalRows $result.TotalRows -tabsProcessed ($tabsLoaded -join ",") -startTime $startTime
 
 $duration = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
-Write-Host "`n=====================================" -ForegroundColor Cyan
-Write-Host " Generator Load Complete"              -ForegroundColor Cyan
-Write-Host " Tabs: $($tabsLoaded -join ', ')"     -ForegroundColor White
-Write-Host " Rows in File:   $($dt.Rows.Count)"   -ForegroundColor White
-Write-Host " Rows Inserted:  $($result.RowsInserted)" -ForegroundColor Green
-Write-Host " Rows Updated:   $($result.RowsUpdated)"  -ForegroundColor Yellow
-Write-Host " Total in Table: $($result.TotalRows)"    -ForegroundColor White
-Write-Host " Duration:       $duration seconds"       -ForegroundColor White
-Write-Host "=====================================" -ForegroundColor Cyan
-
+Write-TabSummary "Generator" $dt.Rows.Count $result.RowsInserted $result.RowsUpdated $result.TotalRows $duration $tabsLoaded
 $conn.Close()

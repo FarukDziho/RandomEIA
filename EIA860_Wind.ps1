@@ -1,13 +1,15 @@
 # ============================================================
 # EIA860_Wind.ps1 - Load Schedule 3.2 Wind Data
+# Version 2.1
+# Tabs: 'Operable', 'Retired and Canceled'
 # ============================================================
 param(
-    [int]$ReportYear  = (Get-Date).Year - 1,
-    [bool]$ManualMode = $false,
+    [int]$ReportYear     = (Get-Date).Year - 1,
+    [bool]$ManualMode    = $false,
     [string]$ExtractPath = ""
 )
 
-$scriptVersion = "2.0"
+$scriptVersion = "2.1"
 $startTime     = Get-Date
 . "E:\Scripts\EIA860_Shared.ps1"
 
@@ -35,50 +37,71 @@ if (-not $ExtractPath) {
     }
 }
 
-$windFile = Get-ChildItem $extractPath -Filter "3_2_Wind*.xlsx" | Select-Object -First 1
+# Find Wind file - case insensitive
+$windFile = Find-EIAFile $extractPath "3_2_*ind*.xlsx"
 if (-not $windFile) {
-    Write-Warning "Wind file not found - skipping"
+    $errMsg = "Wind file not found in $extractPath"
+    Write-Warning $errMsg
     Write-EIALog -conn $conn -logId $logId -status "Skipped" -reportYear $ReportYear `
-                 -errorMessage "Wind file not found" -startTime $startTime
+                 -errorMessage $errMsg -startTime $startTime
     $conn.Close(); exit 0
 }
 Write-Host "Found: $($windFile.Name)" -ForegroundColor Green
+
+# Get actual sheet names
+$availableSheets = Get-ExcelSheetNames $windFile.FullName
+Write-Host "Available tabs:" -ForegroundColor Gray
+$availableSheets | ForEach-Object { Write-Host "  '$_'" -ForegroundColor Gray }
 
 $dt = New-DataTable @("ReportYear","UtilityId","UtilityName","PlantCode","PlantName",
       "State","GeneratorId","TurbineManufacturer","TurbineModel","NumberOfTurbines",
       "TurbineRatedCapacityMW","HubHeight","RotorDiameter","WindQualityClass","StatusTab")
 
+$tabsToLoad = @("Operable","Retired and Canceled")
 $tabsLoaded = @()
-foreach ($tab in @("Operable","Retired and Canceled")) {
+
+foreach ($tab in $tabsToLoad) {
+    $actualTab = $availableSheets | Where-Object { $_ -eq $tab } | Select-Object -First 1
+    if (-not $actualTab) {
+        $actualTab = $availableSheets | Where-Object { $_ -like "*$($tab.Split(' ')[0])*" } | Select-Object -First 1
+    }
+    if (-not $actualTab) {
+        Write-Warning "Tab '$tab' not found - skipping"
+        continue
+    }
+
+    Write-Host "  Reading tab: '$actualTab'" -ForegroundColor Gray
+    if ($tab -eq "Operable") { Show-ColumnNames $windFile.FullName $actualTab }
+
     try {
-        $data     = Import-Excel -Path $windFile.FullName -WorksheetName $tab -StartRow 2
-        $tabLabel = if ($tab -eq "Retired and Canceled") { "Retired" } else { $tab }
+        $data     = Import-Excel -Path $windFile.FullName -WorksheetName $actualTab -StartRow 2
+        $tabLabel = if ($actualTab -like "*Retired*") { "Retired" } else { "Operable" }
         $tabCount = 0
         foreach ($row in $data) {
             if (-not $row.'Plant Code') { continue }
-            $dr = $dt.NewRow()
-            $dr["ReportYear"]             = $ReportYear
-            $dr["UtilityId"]              = Get-Val $row 'Utility ID'
-            $dr["UtilityName"]            = Get-Val $row 'Utility Name'
-            $dr["PlantCode"]              = Get-Val $row 'Plant Code'
-            $dr["PlantName"]              = Get-Val $row 'Plant Name'
-            $dr["State"]                  = Get-Val $row 'State'
-            $dr["GeneratorId"]            = Get-Val $row 'Generator ID'
-            $dr["TurbineManufacturer"]    = Get-Val $row 'Predominant Turbine Manufacturer'
-            $dr["TurbineModel"]           = Get-Val $row 'Predominant Turbine Model Number'
-            $dr["NumberOfTurbines"]       = Get-Val $row 'Number of Turbines'
-            $dr["TurbineRatedCapacityMW"] = Get-Val $row 'Turbine Rated Capacity (MW)'
-            $dr["HubHeight"]              = Get-Val $row 'Turbine Hub Height (Meters)'
-            $dr["RotorDiameter"]          = Get-Val $row 'Rotor Diameter (Meters)'
-            $dr["WindQualityClass"]       = Get-Val $row 'Wind Quality Class'
-            $dr["StatusTab"]              = $tabLabel
+            $dr                              = $dt.NewRow()
+            $dr["ReportYear"]               = $ReportYear
+            $dr["UtilityId"]                = Get-Val $row 'Utility ID'
+            $dr["UtilityName"]              = Get-Val $row 'Utility Name'
+            $dr["PlantCode"]                = Get-Val $row 'Plant Code'
+            $dr["PlantName"]                = Get-Val $row 'Plant Name'
+            $dr["State"]                    = Get-Val $row 'State'
+            $dr["GeneratorId"]              = Get-Val $row 'Generator ID'
+            $dr["TurbineManufacturer"]      = Get-Val $row 'Predominant Turbine Manufacturer'
+            $dr["TurbineModel"]             = Get-Val $row 'Predominant Turbine Model Number'
+            $dr["NumberOfTurbines"]         = Get-Val $row 'Number of Turbines'
+            $dr["TurbineRatedCapacityMW"]   = Get-Val $row 'Turbine Rated Capacity (MW)'
+            $dr["HubHeight"]                = Get-Val $row 'Turbine Hub Height (Meters)'
+            $dr["RotorDiameter"]            = Get-Val $row 'Rotor Diameter (Meters)'
+            $dr["WindQualityClass"]         = Get-Val $row 'Wind Quality Class'
+            $dr["StatusTab"]                = $tabLabel
             $dt.Rows.Add($dr)
             $tabCount++
         }
-        $tabsLoaded += "$tab($tabCount)"
-        Write-Host "  Tab '$tab': $tabCount rows" -ForegroundColor Gray
+        $tabsLoaded += "$actualTab($tabCount)"
+        Write-Host "  Tab '$actualTab': $tabCount rows" -ForegroundColor Gray
     } catch {
-        Write-Warning "Tab '$tab' error: $_"
+        Write-Warning "Tab '$actualTab' error: $_"
     }
 }
 
@@ -91,13 +114,5 @@ Write-EIALog -conn $conn -logId $logId -status "Success" -reportYear $ReportYear
     -totalRows $result.TotalRows -tabsProcessed ($tabsLoaded -join ",") -startTime $startTime
 
 $duration = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
-Write-Host "`n=====================================" -ForegroundColor Cyan
-Write-Host " Wind Load Complete"                   -ForegroundColor Cyan
-Write-Host " Rows in File:   $($dt.Rows.Count)"   -ForegroundColor White
-Write-Host " Rows Inserted:  $($result.RowsInserted)" -ForegroundColor Green
-Write-Host " Rows Updated:   $($result.RowsUpdated)"  -ForegroundColor Yellow
-Write-Host " Total in Table: $($result.TotalRows)"    -ForegroundColor White
-Write-Host " Duration:       $duration seconds"       -ForegroundColor White
-Write-Host "=====================================" -ForegroundColor Cyan
-
+Write-TabSummary "Wind" $dt.Rows.Count $result.RowsInserted $result.RowsUpdated $result.TotalRows $duration $tabsLoaded
 $conn.Close()

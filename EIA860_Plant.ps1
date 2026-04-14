@@ -1,13 +1,15 @@
 # ============================================================
 # EIA860_Plant.ps1 - Load Schedule 2 Plant Data
+# Version 2.1
+# Tab: 'Plant'
 # ============================================================
 param(
-    [int]$ReportYear  = (Get-Date).Year - 1,
-    [bool]$ManualMode = $false,
-    [string]$ExtractPath = ""  # Optional - if ZIP already extracted
+    [int]$ReportYear     = (Get-Date).Year - 1,
+    [bool]$ManualMode    = $false,
+    [string]$ExtractPath = ""
 )
 
-$scriptVersion = "2.0"
+$scriptVersion = "2.1"
 $startTime     = Get-Date
 . "E:\Scripts\EIA860_Shared.ps1"
 
@@ -25,7 +27,6 @@ $logId       = Write-EIALog -conn $conn -logId 0 -status "Running" -reportYear $
                -tableName "EIA860_PlantData" -scriptVersion $scriptVersion `
                -downloadUrl $downloadUrl -filePath $zipFile -startTime $startTime
 
-# Download and extract if needed
 if (-not $ExtractPath) {
     $ok = Get-EIAZipFile -ReportYear $ReportYear -ManualMode $ManualMode `
           -downloadUrl $downloadUrl -zipFile $zipFile -extractPath $extractPath
@@ -36,26 +37,28 @@ if (-not $ExtractPath) {
     }
 }
 
-# Find Plant file
-$plantFile = Get-ChildItem $extractPath -Filter "2__Plant*.xlsx" | Select-Object -First 1
+# Find Plant file - case insensitive
+$plantFile = Find-EIAFile $extractPath "2_*lant*.xlsx"
 if (-not $plantFile) {
-    $plantFile = Get-ChildItem $extractPath -Filter "2_*Plant*.xlsx" | Select-Object -First 1
-}
-if (-not $plantFile) {
+    $errMsg = "Plant file not found in $extractPath"
     Write-EIALog -conn $conn -logId $logId -status "Failed" -reportYear $ReportYear `
-                 -errorMessage "Plant file not found" -startTime $startTime
-    $conn.Close(); exit 1
+                 -errorMessage $errMsg -startTime $startTime
+    Write-Error $errMsg; $conn.Close(); exit 1
 }
 Write-Host "Found: $($plantFile.Name)" -ForegroundColor Green
+
+# Show columns for debugging
+Show-ColumnNames $plantFile.FullName "Plant"
 
 # Read Excel
 try {
     $data = Import-Excel -Path $plantFile.FullName -WorksheetName "Plant" -StartRow 2
     Write-Host "Read $($data.Count) rows" -ForegroundColor Green
 } catch {
+    $errMsg = "Excel read failed: $_"
     Write-EIALog -conn $conn -logId $logId -status "Failed" -reportYear $ReportYear `
-                 -errorMessage "Excel read failed: $_" -startTime $startTime
-    $conn.Close(); exit 1
+                 -errorMessage $errMsg -startTime $startTime
+    Write-Error $errMsg; $conn.Close(); exit 1
 }
 
 # Build DataTable
@@ -65,7 +68,7 @@ $dt = New-DataTable @("ReportYear","UtilityId","UtilityName","PlantCode","PlantN
 
 foreach ($row in $data) {
     if (-not $row.'Plant Name') { continue }
-    $dr = $dt.NewRow()
+    $dr                       = $dt.NewRow()
     $dr["ReportYear"]         = $ReportYear
     $dr["UtilityId"]          = Get-Val $row 'Utility ID'
     $dr["UtilityName"]        = Get-Val $row 'Utility Name'
@@ -85,24 +88,14 @@ foreach ($row in $data) {
     $dt.Rows.Add($dr)
 }
 
-# Load and Merge
 Load-Staging $conn $dt "EIA.EIA860_PlantData_Staging"
 $result = Invoke-MergeSP $conn "EIA.usp_MergeEIA860PlantData"
 
-# Log and Summary
 Write-EIALog -conn $conn -logId $logId -status "Success" -reportYear $ReportYear `
     -tableName "EIA860_PlantData" -rowsInserted $result.RowsInserted `
     -rowsUpdated $result.RowsUpdated -rowsInFile $dt.Rows.Count `
     -totalRows $result.TotalRows -tabsProcessed "Plant" -startTime $startTime
 
 $duration = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
-Write-Host "`n=====================================" -ForegroundColor Cyan
-Write-Host " Plant Load Complete"                   -ForegroundColor Cyan
-Write-Host " Rows in File:   $($dt.Rows.Count)"    -ForegroundColor White
-Write-Host " Rows Inserted:  $($result.RowsInserted)" -ForegroundColor Green
-Write-Host " Rows Updated:   $($result.RowsUpdated)"  -ForegroundColor Yellow
-Write-Host " Total in Table: $($result.TotalRows)"    -ForegroundColor White
-Write-Host " Duration:       $duration seconds"       -ForegroundColor White
-Write-Host "=====================================" -ForegroundColor Cyan
-
+Write-TabSummary "Plant" $dt.Rows.Count $result.RowsInserted $result.RowsUpdated $result.TotalRows $duration @("Plant")
 $conn.Close()

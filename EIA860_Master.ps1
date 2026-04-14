@@ -1,7 +1,8 @@
 # ============================================================
 # EIA860_Master.ps1
 # Runs all EIA-860 ETL scripts in sequence
-# Downloads and extracts ZIP once, passes path to all scripts
+# Downloads and extracts ZIP once then passes path to all scripts
+# Version 2.1
 # ============================================================
 param(
     [int]$ReportYear  = (Get-Date).Year - 1,
@@ -19,11 +20,13 @@ Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host " EIA-860 MASTER ETL - ALL TABLES"            -ForegroundColor Cyan
 Write-Host " Report Year: $ReportYear"                   -ForegroundColor Cyan
 Write-Host " Manual Mode: $ManualMode"                   -ForegroundColor Cyan
+Write-Host " Server:      $global:sqlServer"             -ForegroundColor Cyan
+Write-Host " Database:    $global:sqlDatabase"           -ForegroundColor Cyan
 Write-Host " Started:     $masterStart"                  -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 
 # ============================================================
-# Step 1: Download and Extract ONCE
+# Step 1: Load ImportExcel and Download/Extract ZIP Once
 # ============================================================
 Import-ExcelModule
 
@@ -36,36 +39,48 @@ if (-not $ok) {
 }
 
 # ============================================================
-# Step 2: Run Each Script - Pass ExtractPath to skip re-download
+# Step 2: Run Each Script Passing ExtractPath to Skip Re-Download
 # ============================================================
 $scripts = @(
-    "EIA860_Plant.ps1",
-    "EIA860_Utility.ps1",
-    "EIA860_Generator.ps1",
-    "EIA860_Wind.ps1",
-    "EIA860_Solar.ps1",
-    "EIA860_Storage.ps1",
-    "EIA860_MultiFuel.ps1",
-    "EIA860_Owner.ps1"
+    @{ Name = "EIA860_Plant.ps1";     Label = "Plant"     },
+    @{ Name = "EIA860_Utility.ps1";   Label = "Utility"   },
+    @{ Name = "EIA860_Generator.ps1"; Label = "Generator" },
+    @{ Name = "EIA860_Wind.ps1";      Label = "Wind"      },
+    @{ Name = "EIA860_Solar.ps1";     Label = "Solar"     },
+    @{ Name = "EIA860_Storage.ps1";   Label = "Storage"   },
+    @{ Name = "EIA860_MultiFuel.ps1"; Label = "MultiFuel" },
+    @{ Name = "EIA860_Owner.ps1";     Label = "Owner"     }
 )
 
 $results = @()
 
 foreach ($script in $scripts) {
-    $scriptPath = "E:\Scripts\$script"
+    $scriptPath  = "E:\Scripts\$($script.Name)"
     $scriptStart = Get-Date
-    Write-Host "`n--- Running $script ---" -ForegroundColor Yellow
+
+    Write-Host "`n--- Running $($script.Label) ---" -ForegroundColor Yellow
+
+    # Check script exists
+    if (-not (Test-Path $scriptPath)) {
+        Write-Warning "Script not found: $scriptPath - skipping"
+        $results += [PSCustomObject]@{
+            Label    = $script.Label
+            Status   = "Not Found"
+            Duration = 0
+        }
+        continue
+    }
 
     try {
         & $scriptPath -ReportYear $ReportYear -ManualMode $false -ExtractPath $extractPath
         $status = "Success"
     } catch {
         $status = "Failed: $_"
-        Write-Warning "$script failed: $_"
+        Write-Warning "$($script.Name) failed: $_"
     }
 
     $results += [PSCustomObject]@{
-        Script   = $script
+        Label    = $script.Label
         Status   = $status
         Duration = [int](New-TimeSpan -Start $scriptStart -End (Get-Date)).TotalSeconds
     }
@@ -75,17 +90,23 @@ foreach ($script in $scripts) {
 # Step 3: Print Master Summary
 # ============================================================
 $totalDuration = [int](New-TimeSpan -Start $masterStart -End (Get-Date)).TotalSeconds
+$successCount  = ($results | Where-Object { $_.Status -eq "Success" }).Count
+$failCount     = ($results | Where-Object { $_.Status -ne "Success" }).Count
 
 Write-Host "`n=============================================" -ForegroundColor Cyan
 Write-Host " EIA-860 MASTER LOAD COMPLETE"                -ForegroundColor Cyan
-Write-Host " Report Year: $ReportYear"                    -ForegroundColor Cyan
-Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host " Report Year:   $ReportYear"                  -ForegroundColor White
+Write-Host " Successful:    $successCount / $($results.Count)" -ForegroundColor Green
+Write-Host " Failed:        $failCount"                   -ForegroundColor $(if ($failCount -gt 0) { "Red" } else { "Green" })
+Write-Host "---------------------------------------------" -ForegroundColor Cyan
 
 foreach ($r in $results) {
-    $color = if ($r.Status -eq "Success") { "Green" } else { "Red" }
-    Write-Host " $($r.Script.PadRight(30)) $($r.Status.PadRight(10)) $($r.Duration)s" -ForegroundColor $color
+    $color  = if ($r.Status -eq "Success") { "Green" } elseif ($r.Status -like "Skipped*") { "Yellow" } else { "Red" }
+    $label  = $r.Label.PadRight(12)
+    $status = $r.Status.PadRight(10)
+    Write-Host " $label $status $($r.Duration)s" -ForegroundColor $color
 }
 
-Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host "---------------------------------------------" -ForegroundColor Cyan
 Write-Host " Total Duration: $totalDuration seconds"      -ForegroundColor White
 Write-Host "=============================================" -ForegroundColor Cyan

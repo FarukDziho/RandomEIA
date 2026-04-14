@@ -1,13 +1,15 @@
 # ============================================================
 # EIA860_Owner.ps1 - Load Schedule 4 Owner Data
+# Version 2.1
+# Tab: 'Ownership'
 # ============================================================
 param(
-    [int]$ReportYear  = (Get-Date).Year - 1,
-    [bool]$ManualMode = $false,
+    [int]$ReportYear     = (Get-Date).Year - 1,
+    [bool]$ManualMode    = $false,
     [string]$ExtractPath = ""
 )
 
-$scriptVersion = "2.0"
+$scriptVersion = "2.1"
 $startTime     = Get-Date
 . "E:\Scripts\EIA860_Shared.ps1"
 
@@ -35,41 +37,81 @@ if (-not $ExtractPath) {
     }
 }
 
-$ownerFile = Get-ChildItem $extractPath -Filter "4*Owner*.xlsx" | Select-Object -First 1
+# Find Owner file - case insensitive
+$ownerFile = Find-EIAFile $extractPath "4_*wner*.xlsx"
 if (-not $ownerFile) {
-    Write-Warning "Owner file not found - skipping"
+    $errMsg = "Owner file not found in $extractPath"
+    Write-Warning $errMsg
     Write-EIALog -conn $conn -logId $logId -status "Skipped" -reportYear $ReportYear `
-                 -errorMessage "Owner file not found" -startTime $startTime
+                 -errorMessage $errMsg -startTime $startTime
     $conn.Close(); exit 0
 }
 Write-Host "Found: $($ownerFile.Name)" -ForegroundColor Green
+
+# Get actual sheet names and find ownership tab
+$availableSheets = Get-ExcelSheetNames $ownerFile.FullName
+Write-Host "Available tabs:" -ForegroundColor Gray
+$availableSheets | ForEach-Object { Write-Host "  '$_'" -ForegroundColor Gray }
+
+# Find the ownership tab - confirmed as 'Ownership' in 2023 file
+$ownerTab = $availableSheets | Where-Object { $_ -eq "Ownership" } | Select-Object -First 1
+if (-not $ownerTab) {
+    $ownerTab = $availableSheets | Where-Object { $_ -like "*wner*" } | Select-Object -First 1
+}
+if (-not $ownerTab) {
+    $ownerTab = $availableSheets | Select-Object -First 1
+    Write-Warning "Could not find Ownership tab - using first tab: '$ownerTab'"
+}
+Write-Host "Using tab: '$ownerTab'" -ForegroundColor Green
+
+# Show exact column names for debugging
+Show-ColumnNames $ownerFile.FullName $ownerTab
 
 $dt = New-DataTable @("ReportYear","UtilityId","UtilityName","PlantCode","PlantName",
       "State","GeneratorId","OwnerId","OwnerName","OwnerState","OwnershipPercent")
 
 try {
-    $data     = Import-Excel -Path $ownerFile.FullName -WorksheetName "Ownership" -StartRow 2
+    $data = Import-Excel -Path $ownerFile.FullName -WorksheetName $ownerTab -StartRow 2
+
+    if ($null -eq $data -or $data.Count -eq 0) {
+        Write-Warning "No data returned from Owner file tab '$ownerTab'"
+        Write-EIALog -conn $conn -logId $logId -status "Skipped" -reportYear $ReportYear `
+                     -errorMessage "No data in Owner tab" -startTime $startTime
+        $conn.Close(); exit 0
+    }
+
+    Write-Host "  Total rows read: $($data.Count)" -ForegroundColor Gray
+
     $tabCount = 0
     foreach ($row in $data) {
-        if (-not $row.'Plant Code') { continue }
-        $dr = $dt.NewRow()
-        $dr["ReportYear"]       = $ReportYear
-        $dr["UtilityId"]        = Get-Val $row 'Utility ID'
-        $dr["UtilityName"]      = Get-Val $row 'Utility Name'
-        $dr["PlantCode"]        = Get-Val $row 'Plant Code'
-        $dr["PlantName"]        = Get-Val $row 'Plant Name'
-        $dr["State"]            = Get-Val $row 'State'
-        $dr["GeneratorId"]      = Get-Val $row 'Generator ID'
-        $dr["OwnerId"]          = Get-Val $row 'Owner ID'
-        $dr["OwnerName"]        = Get-Val $row 'Owner Name'
-        $dr["OwnerState"]       = Get-Val $row 'Owner State'
-        $dr["OwnershipPercent"] = Get-Val $row 'Percent Owned'
+        # Skip empty rows - check Plant Code first
+        $plantCode = $null
+        try { $plantCode = $row.'Plant Code' } catch {}
+        if ($null -eq $plantCode -or $plantCode -eq "") { continue }
+
+        $dr                      = $dt.NewRow()
+        $dr["ReportYear"]        = $ReportYear
+        $dr["UtilityId"]         = Get-Val $row 'Utility ID'
+        $dr["UtilityName"]       = Get-Val $row 'Utility Name'
+        $dr["PlantCode"]         = Get-Val $row 'Plant Code'
+        $dr["PlantName"]         = Get-Val $row 'Plant Name'
+        $dr["State"]             = Get-Val $row 'State'
+        $dr["GeneratorId"]       = Get-Val $row 'Generator ID'
+        $dr["OwnerId"]           = Get-Val $row 'Owner ID'
+        $dr["OwnerName"]         = Get-Val $row 'Owner Name'
+        $dr["OwnerState"]        = Get-Val $row 'Owner State'
+        $dr["OwnershipPercent"]  = Get-Val $row 'Percent Owned'
         $dt.Rows.Add($dr)
         $tabCount++
     }
-    Write-Host "  Read $tabCount rows" -ForegroundColor Gray
+    Write-Host "  Processed $tabCount valid rows" -ForegroundColor Gray
+
 } catch {
-    Write-Warning "Owner read error: $_"
+    $errMsg = "Owner read error: $_"
+    Write-Warning $errMsg
+    Write-EIALog -conn $conn -logId $logId -status "Failed" -reportYear $ReportYear `
+                 -errorMessage $errMsg -startTime $startTime
+    $conn.Close(); exit 1
 }
 
 Load-Staging $conn $dt "EIA.EIA860_OwnerData_Staging"
@@ -78,16 +120,8 @@ $result = Invoke-MergeSP $conn "EIA.usp_MergeEIA860OwnerData"
 Write-EIALog -conn $conn -logId $logId -status "Success" -reportYear $ReportYear `
     -tableName "EIA860_OwnerData" -rowsInserted $result.RowsInserted `
     -rowsUpdated $result.RowsUpdated -rowsInFile $dt.Rows.Count `
-    -totalRows $result.TotalRows -tabsProcessed "Ownership" -startTime $startTime
+    -totalRows $result.TotalRows -tabsProcessed $ownerTab -startTime $startTime
 
 $duration = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
-Write-Host "`n=====================================" -ForegroundColor Cyan
-Write-Host " Owner Load Complete"                  -ForegroundColor Cyan
-Write-Host " Rows in File:   $($dt.Rows.Count)"   -ForegroundColor White
-Write-Host " Rows Inserted:  $($result.RowsInserted)" -ForegroundColor Green
-Write-Host " Rows Updated:   $($result.RowsUpdated)"  -ForegroundColor Yellow
-Write-Host " Total in Table: $($result.TotalRows)"    -ForegroundColor White
-Write-Host " Duration:       $duration seconds"       -ForegroundColor White
-Write-Host "=====================================" -ForegroundColor Cyan
-
+Write-TabSummary "Owner" $dt.Rows.Count $result.RowsInserted $result.RowsUpdated $result.TotalRows $duration @($ownerTab)
 $conn.Close()

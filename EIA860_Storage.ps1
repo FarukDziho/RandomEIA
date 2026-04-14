@@ -1,13 +1,15 @@
 # ============================================================
-# EIA860_Storage.ps1 - Load Schedule 3.4 Storage Data
+# EIA860_Storage.ps1 - Load Schedule 3.4 Energy Storage Data
+# Version 2.1
+# Tabs: 'Operable', 'Proposed', 'Retired and Canceled'
 # ============================================================
 param(
-    [int]$ReportYear  = (Get-Date).Year - 1,
-    [bool]$ManualMode = $false,
+    [int]$ReportYear     = (Get-Date).Year - 1,
+    [bool]$ManualMode    = $false,
     [string]$ExtractPath = ""
 )
 
-$scriptVersion = "2.0"
+$scriptVersion = "2.1"
 $startTime     = Get-Date
 . "E:\Scripts\EIA860_Shared.ps1"
 
@@ -35,48 +37,74 @@ if (-not $ExtractPath) {
     }
 }
 
-$storageFile = Get-ChildItem $extractPath -Filter "3_4_Energy_Storage*.xlsx" | Select-Object -First 1
+# Find Storage file - case insensitive
+$storageFile = Find-EIAFile $extractPath "3_4_*torage*.xlsx"
 if (-not $storageFile) {
-    Write-Warning "Storage file not found - skipping"
+    $errMsg = "Storage file not found in $extractPath"
+    Write-Warning $errMsg
     Write-EIALog -conn $conn -logId $logId -status "Skipped" -reportYear $ReportYear `
-                 -errorMessage "Storage file not found" -startTime $startTime
+                 -errorMessage $errMsg -startTime $startTime
     $conn.Close(); exit 0
 }
 Write-Host "Found: $($storageFile.Name)" -ForegroundColor Green
+
+# Get actual sheet names
+$availableSheets = Get-ExcelSheetNames $storageFile.FullName
+Write-Host "Available tabs:" -ForegroundColor Gray
+$availableSheets | ForEach-Object { Write-Host "  '$_'" -ForegroundColor Gray }
 
 $dt = New-DataTable @("ReportYear","UtilityId","UtilityName","PlantCode","PlantName",
       "State","GeneratorId","StorageTechnology","EnergyCapacityMWH",
       "MaxChargeRateMW","MaxDischargeRateMW","StorageEnclosureType","StatusTab")
 
+# Storage has Operable, Proposed AND Retired and Canceled
+$tabsToLoad = @("Operable","Proposed","Retired and Canceled")
 $tabsLoaded = @()
-foreach ($tab in @("Operable","Retired and Canceled")) {
+
+foreach ($tab in $tabsToLoad) {
+    $actualTab = $availableSheets | Where-Object { $_ -eq $tab } | Select-Object -First 1
+    if (-not $actualTab) {
+        $actualTab = $availableSheets | Where-Object { $_ -like "*$($tab.Split(' ')[0])*" } | Select-Object -First 1
+    }
+    if (-not $actualTab) {
+        Write-Warning "Tab '$tab' not found - skipping"
+        continue
+    }
+
+    Write-Host "  Reading tab: '$actualTab'" -ForegroundColor Gray
+    if ($tab -eq "Operable") { Show-ColumnNames $storageFile.FullName $actualTab }
+
     try {
-        $data     = Import-Excel -Path $storageFile.FullName -WorksheetName $tab -StartRow 2
-        $tabLabel = if ($tab -eq "Retired and Canceled") { "Retired" } else { $tab }
+        $data     = Import-Excel -Path $storageFile.FullName -WorksheetName $actualTab -StartRow 2
+        $tabLabel = switch -Wildcard ($actualTab) {
+            "*Retired*"  { "Retired"  }
+            "*Proposed*" { "Proposed" }
+            default      { "Operable" }
+        }
         $tabCount = 0
         foreach ($row in $data) {
             if (-not $row.'Plant Code') { continue }
-            $dr = $dt.NewRow()
-            $dr["ReportYear"]           = $ReportYear
-            $dr["UtilityId"]            = Get-Val $row 'Utility ID'
-            $dr["UtilityName"]          = Get-Val $row 'Utility Name'
-            $dr["PlantCode"]            = Get-Val $row 'Plant Code'
-            $dr["PlantName"]            = Get-Val $row 'Plant Name'
-            $dr["State"]                = Get-Val $row 'State'
-            $dr["GeneratorId"]          = Get-Val $row 'Generator ID'
-            $dr["StorageTechnology"]    = Get-Val $row 'Storage Technology'
-            $dr["EnergyCapacityMWH"]    = Get-Val $row 'Energy Capacity (MWh)'
-            $dr["MaxChargeRateMW"]      = Get-Val $row 'Maximum Charge Rate (MW)'
-            $dr["MaxDischargeRateMW"]   = Get-Val $row 'Maximum Discharge Rate (MW)'
-            $dr["StorageEnclosureType"] = Get-Val $row 'Storage Enclosure'
-            $dr["StatusTab"]            = $tabLabel
+            $dr                           = $dt.NewRow()
+            $dr["ReportYear"]             = $ReportYear
+            $dr["UtilityId"]              = Get-Val $row 'Utility ID'
+            $dr["UtilityName"]            = Get-Val $row 'Utility Name'
+            $dr["PlantCode"]              = Get-Val $row 'Plant Code'
+            $dr["PlantName"]              = Get-Val $row 'Plant Name'
+            $dr["State"]                  = Get-Val $row 'State'
+            $dr["GeneratorId"]            = Get-Val $row 'Generator ID'
+            $dr["StorageTechnology"]      = Get-Val $row 'Storage Technology'
+            $dr["EnergyCapacityMWH"]      = Get-Val $row 'Energy Capacity (MWh)'
+            $dr["MaxChargeRateMW"]        = Get-Val $row 'Maximum Charge Rate (MW)'
+            $dr["MaxDischargeRateMW"]     = Get-Val $row 'Maximum Discharge Rate (MW)'
+            $dr["StorageEnclosureType"]   = Get-Val $row 'Storage Enclosure'
+            $dr["StatusTab"]              = $tabLabel
             $dt.Rows.Add($dr)
             $tabCount++
         }
-        $tabsLoaded += "$tab($tabCount)"
-        Write-Host "  Tab '$tab': $tabCount rows" -ForegroundColor Gray
+        $tabsLoaded += "$actualTab($tabCount)"
+        Write-Host "  Tab '$actualTab': $tabCount rows" -ForegroundColor Gray
     } catch {
-        Write-Warning "Tab '$tab' error: $_"
+        Write-Warning "Tab '$actualTab' error: $_"
     }
 }
 
@@ -89,13 +117,5 @@ Write-EIALog -conn $conn -logId $logId -status "Success" -reportYear $ReportYear
     -totalRows $result.TotalRows -tabsProcessed ($tabsLoaded -join ",") -startTime $startTime
 
 $duration = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
-Write-Host "`n=====================================" -ForegroundColor Cyan
-Write-Host " Storage Load Complete"                -ForegroundColor Cyan
-Write-Host " Rows in File:   $($dt.Rows.Count)"   -ForegroundColor White
-Write-Host " Rows Inserted:  $($result.RowsInserted)" -ForegroundColor Green
-Write-Host " Rows Updated:   $($result.RowsUpdated)"  -ForegroundColor Yellow
-Write-Host " Total in Table: $($result.TotalRows)"    -ForegroundColor White
-Write-Host " Duration:       $duration seconds"       -ForegroundColor White
-Write-Host "=====================================" -ForegroundColor Cyan
-
+Write-TabSummary "Storage" $dt.Rows.Count $result.RowsInserted $result.RowsUpdated $result.TotalRows $duration $tabsLoaded
 $conn.Close()
