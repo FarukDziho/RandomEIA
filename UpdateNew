@@ -1,0 +1,86 @@
+# ============================================================
+# EIA-860 Schedule 2 Plant Data -> SQL Server ETL Script
+# With Duplicate Protection + Full Logging
+# Version 1.2 - EIA Schema + No Excel Required
+# ============================================================
+
+# --- Configuration ---
+$scriptVersion = "1.2"
+$startTime     = Get-Date
+$reportYear    = 2023
+$sqlServer     = "YOUR_SERVER_NAME"
+$sqlDatabase   = "YOUR_DATABASE_NAME"
+$sqlTable      = "EIA.EIA860_PlantData"
+$logTable      = "EIA.EIA860_LoadLog"
+$stagingTable  = "EIA.EIA860_PlantData_Staging"
+$storedProc    = "EIA.usp_MergeEIA860PlantData"
+$downloadPath  = "E:\EIA860"
+$zipFile       = "$downloadPath\eia8602023.zip"
+$extractPath   = "$downloadPath\eia8602023"
+$downloadUrl   = "https://www.eia.gov/electricity/data/eia860/xls/eia860$reportYear.zip"
+$manualMode    = $true    # Set to $false when ThreatLocker is approved
+
+# Capture machine and user info
+$machineName   = $env:COMPUTERNAME
+$runByUser     = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+# ============================================================
+# Step 1: Load ImportExcel Module
+# ============================================================
+Write-Host "Loading ImportExcel module..." -ForegroundColor Cyan
+
+try {
+    Import-Module ImportExcel -Force -ErrorAction Stop
+    Write-Host "ImportExcel module loaded." -ForegroundColor Green
+} catch {
+    Write-Error "ImportExcel module not found. Run: Install-Module -Name ImportExcel -Force -Scope AllUsers"
+    exit 1
+}
+
+# ============================================================
+# Step 2: Connect to SQL Server
+# ============================================================
+Write-Host "Connecting to SQL Server..." -ForegroundColor Cyan
+
+$connectionString = "Server=$sqlServer;Database=$sqlDatabase;Integrated Security=True;"
+$connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+
+try {
+    $connection.Open()
+    Write-Host "Connected to SQL Server." -ForegroundColor Green
+} catch {
+    Write-Error "SQL connection failed: $_"
+    exit 1
+}
+
+# ============================================================
+# Helper: Write to Log Table
+# ============================================================
+function Write-DBLog {
+    param(
+        [System.Data.SqlClient.SqlConnection]$conn,
+        [int]$logId,
+        [string]$status,
+        [int]$rowsInStaging    = 0,
+        [int]$rowsInserted     = 0,
+        [int]$rowsUpdated      = 0,
+        [int]$rowsSkipped      = 0,
+        [int]$totalRows        = 0,
+        [string]$errorMessage  = ""
+    )
+
+    $duration     = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
+    $errorMessage = $errorMessage.Replace("'", "''")
+    $safeUser     = $runByUser.Replace("'", "''")
+    $safeMachine  = $machineName.Replace("'", "''")
+    $safeUrl      = $downloadUrl.Replace("'", "''")
+    $safeZip      = $zipFile.Replace("'", "''")
+
+    if ($logId -eq 0) {
+        $sql = "INSERT INTO $logTable
+                    (ReportYear, Status, RowsInStaging, RowsInserted, RowsUpdated,
+                     RowsSkipped, TotalRowsInTable, ScriptVersion, MachineName,
+                     RunByUser, DownloadUrl, FilePath, ErrorMessage, DurationSeconds)
+                VALUES
+                    ($reportYear, '$status', $rowsInStaging, $rowsInserted, $rowsUpdated,
+                     $rowsSkipped, $totalRows, '$scriptVersion', '$safeMachine',
