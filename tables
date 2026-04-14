@@ -1,17 +1,14 @@
--- ============================================================
--- EIA-860 Database Objects
--- Run this entire script in SSMS before running PowerShell
--- ============================================================
-
-USE YOUR_DATABASE_NAME;  -- Change this to your database name
+USE YOUR_DATABASE_NAME;
 GO
 
 -- ============================================================
 -- Table 1: Main Plant Data Table
 -- ============================================================
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'EIA860_PlantData')
+IF NOT EXISTS (SELECT * FROM sys.tables t 
+               JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_PlantData' AND s.name = 'EIA')
 BEGIN
-    CREATE TABLE EIA860_PlantData (
+    CREATE TABLE EIA.EIA860_PlantData (
         Id                  INT IDENTITY(1,1) PRIMARY KEY,
         ReportYear          INT,
         UtilityId           NVARCHAR(50),
@@ -31,18 +28,20 @@ BEGIN
         PrimaryPurpose      NVARCHAR(100),
         LoadedAt            DATETIME DEFAULT GETDATE()
     );
-    PRINT 'Created table: EIA860_PlantData';
+    PRINT 'Created table: EIA.EIA860_PlantData';
 END
 ELSE
-    PRINT 'Table already exists: EIA860_PlantData';
+    PRINT 'Table already exists: EIA.EIA860_PlantData';
 GO
 
 -- ============================================================
 -- Table 2: Staging Table
 -- ============================================================
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'EIA860_PlantData_Staging')
+IF NOT EXISTS (SELECT * FROM sys.tables t 
+               JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_PlantData_Staging' AND s.name = 'EIA')
 BEGIN
-    CREATE TABLE EIA860_PlantData_Staging (
+    CREATE TABLE EIA.EIA860_PlantData_Staging (
         ReportYear          INT,
         UtilityId           NVARCHAR(50),
         UtilityName         NVARCHAR(255),
@@ -61,18 +60,20 @@ BEGIN
         PrimaryPurpose      NVARCHAR(100),
         LoadedAt            DATETIME DEFAULT GETDATE()
     );
-    PRINT 'Created table: EIA860_PlantData_Staging';
+    PRINT 'Created table: EIA.EIA860_PlantData_Staging';
 END
 ELSE
-    PRINT 'Table already exists: EIA860_PlantData_Staging';
+    PRINT 'Table already exists: EIA.EIA860_PlantData_Staging';
 GO
 
 -- ============================================================
 -- Table 3: Load Log Table
 -- ============================================================
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'EIA860_LoadLog')
+IF NOT EXISTS (SELECT * FROM sys.tables t 
+               JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_LoadLog' AND s.name = 'EIA')
 BEGIN
-    CREATE TABLE EIA860_LoadLog (
+    CREATE TABLE EIA.EIA860_LoadLog (
         LogId               INT IDENTITY(1,1) PRIMARY KEY,
         RunDate             DATETIME DEFAULT GETDATE(),
         ReportYear          INT,
@@ -90,21 +91,21 @@ BEGIN
         ErrorMessage        NVARCHAR(MAX),
         DurationSeconds     INT
     );
-    PRINT 'Created table: EIA860_LoadLog';
+    PRINT 'Created table: EIA.EIA860_LoadLog';
 END
 ELSE
-    PRINT 'Table already exists: EIA860_LoadLog';
+    PRINT 'Table already exists: EIA.EIA860_LoadLog';
 GO
 
 -- ============================================================
--- Unique Constraint on Main Table (prevents duplicates)
+-- Unique Constraint on Main Table
 -- ============================================================
 IF NOT EXISTS (
     SELECT * FROM sys.indexes 
     WHERE name = 'UQ_EIA860_Plant' 
-    AND object_id = OBJECT_ID('EIA860_PlantData'))
+    AND object_id = OBJECT_ID('EIA.EIA860_PlantData'))
 BEGIN
-    ALTER TABLE EIA860_PlantData
+    ALTER TABLE EIA.EIA860_PlantData
     ADD CONSTRAINT UQ_EIA860_Plant 
     UNIQUE (ReportYear, PlantCode);
     PRINT 'Created unique constraint: UQ_EIA860_Plant';
@@ -116,11 +117,13 @@ GO
 -- ============================================================
 -- Stored Procedure: Merge Staging into Main Table
 -- ============================================================
-IF EXISTS (SELECT * FROM sys.procedures WHERE name = 'usp_MergeEIA860PlantData')
-    DROP PROCEDURE usp_MergeEIA860PlantData;
+IF EXISTS (SELECT * FROM sys.procedures p
+           JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860PlantData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860PlantData;
 GO
 
-CREATE PROCEDURE usp_MergeEIA860PlantData
+CREATE PROCEDURE EIA.usp_MergeEIA860PlantData
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -130,14 +133,12 @@ BEGIN
     DECLARE @SkipCount    INT = 0;
     DECLARE @StagingCount INT = 0;
 
-    -- Temp table to capture MERGE output
     DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
 
-    SELECT @StagingCount = COUNT(*) FROM EIA860_PlantData_Staging;
+    SELECT @StagingCount = COUNT(*) FROM EIA.EIA860_PlantData_Staging;
 
-    -- Perform MERGE
-    MERGE EIA860_PlantData AS target
-    USING EIA860_PlantData_Staging AS source
+    MERGE EIA.EIA860_PlantData AS target
+    USING EIA.EIA860_PlantData_Staging AS source
         ON target.ReportYear = source.ReportYear
         AND target.PlantCode  = source.PlantCode
 
@@ -190,26 +191,21 @@ BEGIN
 
     OUTPUT $action INTO @MergeOutput(MergeAction);
 
-    -- Count actions
     SELECT
         @InsertCount = SUM(CASE WHEN MergeAction = 'INSERT' THEN 1 ELSE 0 END),
         @UpdateCount = SUM(CASE WHEN MergeAction = 'UPDATE' THEN 1 ELSE 0 END)
     FROM @MergeOutput;
 
-    -- Rows skipped = matched but unchanged
     SET @SkipCount = @StagingCount - ISNULL(@InsertCount,0) - ISNULL(@UpdateCount,0);
 
-    -- Return results to PowerShell
     SELECT
-        ISNULL(@InsertCount, 0)                     AS RowsInserted,
-        ISNULL(@UpdateCount, 0)                     AS RowsUpdated,
-        ISNULL(@SkipCount, 0)                       AS RowsSkipped,
-        @StagingCount                               AS RowsInStaging,
-        (SELECT COUNT(*) FROM EIA860_PlantData)     AS TotalRowsInTable;
+        ISNULL(@InsertCount, 0)                          AS RowsInserted,
+        ISNULL(@UpdateCount, 0)                          AS RowsUpdated,
+        ISNULL(@SkipCount, 0)                            AS RowsSkipped,
+        @StagingCount                                    AS RowsInStaging,
+        (SELECT COUNT(*) FROM EIA.EIA860_PlantData)      AS TotalRowsInTable;
 
-    -- Clear staging table
-    TRUNCATE TABLE EIA860_PlantData_Staging;
-
+    TRUNCATE TABLE EIA.EIA860_PlantData_Staging;
 END
 GO
 
@@ -217,21 +213,16 @@ GO
 -- Verify Everything Was Created
 -- ============================================================
 SELECT 
-    name        AS ObjectName,
-    type_desc   AS ObjectType,
-    create_date AS CreatedDate
-FROM sys.objects
-WHERE name IN (
-    'EIA860_PlantData',
-    'EIA860_PlantData_Staging',
-    'EIA860_LoadLog',
-    'usp_MergeEIA860PlantData',
-    'UQ_EIA860_Plant'
-)
-ORDER BY type_desc, name;
+    s.name      AS SchemaName,
+    o.name      AS ObjectName,
+    o.type_desc AS ObjectType,
+    o.create_date AS CreatedDate
+FROM sys.objects o
+JOIN sys.schemas s ON o.schema_id = s.schema_id
+WHERE s.name = 'EIA'
+ORDER BY o.type_desc, o.name;
 GO
 
 PRINT '============================================';
-PRINT 'All EIA-860 database objects created!';
-PRINT 'You are ready to run the PowerShell script.';
+PRINT 'All EIA schema objects created successfully!';
 PRINT '============================================';
