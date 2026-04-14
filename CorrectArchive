@@ -1,0 +1,459 @@
+# ============================================================
+# EIA-860 Schedule 2 Plant Data -> SQL Server ETL Script
+# With Duplicate Protection + Full Logging + Parameterized Year
+# Version 1.4 - Correct Archive vs Latest Year URL Logic
+# ============================================================
+
+# --- Parameters (can be passed from command line or SQL Agent) ---
+param(
+    [int]$ReportYear  = (Get-Date).Year - 1,  # Defaults to previous year
+    [bool]$ManualMode = $false                 # Set to $true to skip download
+)
+
+# --- Configuration ---
+$scriptVersion = "1.4"
+$startTime     = Get-Date
+$sqlServer     = "YOUR_SERVER_NAME"
+$sqlDatabase   = "YOUR_DATABASE_NAME"
+$sqlTable      = "EIA.EIA860_PlantData"
+$logTable      = "EIA.EIA860_LoadLog"
+$stagingTable  = "EIA.EIA860_PlantData_Staging"
+$storedProc    = "EIA.usp_MergeEIA860PlantData"
+$downloadPath  = "E:\EIA860"
+$zipFile       = "$downloadPath\eia860$ReportYear.zip"
+$extractPath   = "$downloadPath\eia860$ReportYear"
+$latestYear    = 2024  # Update this when EIA releases new data each year
+
+# --- Build correct URL based on year ---
+if ($ReportYear -eq $latestYear) {
+    $downloadUrl = "https://www.eia.gov/electricity/data/eia860/xls/eia860$ReportYear.zip"
+} else {
+    $downloadUrl = "https://www.eia.gov/electricity/data/eia860/archive/xls/eia860$ReportYear.zip"
+}
+
+# Capture machine and user info
+$machineName   = $env:COMPUTERNAME
+$runByUser     = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+Write-Host "=====================================" -ForegroundColor Cyan
+Write-Host " EIA-860 ETL Script v$scriptVersion"  -ForegroundColor Cyan
+Write-Host " Report Year: $ReportYear"             -ForegroundColor Cyan
+Write-Host " Manual Mode: $ManualMode"             -ForegroundColor Cyan
+Write-Host " Download URL: $downloadUrl"           -ForegroundColor Cyan
+Write-Host " Started:     $startTime"              -ForegroundColor Cyan
+Write-Host "=====================================" -ForegroundColor Cyan
+
+# ============================================================
+# Step 1: Load ImportExcel Module
+# ============================================================
+Write-Host "Loading ImportExcel module..." -ForegroundColor Cyan
+
+# Auto install if missing
+if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+    Write-Host "ImportExcel not found - installing..." -ForegroundColor Yellow
+    try {
+        Install-Module -Name ImportExcel -Force -Scope AllUsers -ErrorAction Stop
+        Write-Host "ImportExcel installed successfully." -ForegroundColor Green
+    } catch {
+        Write-Error "Failed to install ImportExcel: $_"
+        Write-Error "Please run manually: Install-Module -Name ImportExcel -Force -Scope AllUsers"
+        exit 1
+    }
+}
+
+try {
+    Import-Module ImportExcel -Force -ErrorAction Stop
+    Write-Host "ImportExcel module loaded." -ForegroundColor Green
+} catch {
+    Write-Error "Failed to load ImportExcel: $_"
+    exit 1
+}
+
+# ============================================================
+# Step 2: Connect to SQL Server
+# ============================================================
+Write-Host "Connecting to SQL Server..." -ForegroundColor Cyan
+
+$connectionString = "Server=$sqlServer;Database=$sqlDatabase;Integrated Security=True;"
+$connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+
+try {
+    $connection.Open()
+    Write-Host "Connected to $sqlServer / $sqlDatabase" -ForegroundColor Green
+} catch {
+    Write-Error "SQL connection failed: $_"
+    exit 1
+}
+
+# ============================================================
+# Helper: Write to Log Table
+# ============================================================
+function Write-DBLog {
+    param(
+        [System.Data.SqlClient.SqlConnection]$conn,
+        [int]$logId,
+        [string]$status,
+        [int]$rowsInStaging    = 0,
+        [int]$rowsInserted     = 0,
+        [int]$rowsUpdated      = 0,
+        [int]$rowsSkipped      = 0,
+        [int]$totalRows        = 0,
+        [string]$errorMessage  = ""
+    )
+
+    $duration     = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
+    $errorMessage = $errorMessage.Replace("'", "''")
+    $safeUser     = $runByUser.Replace("'", "''")
+    $safeMachine  = $machineName.Replace("'", "''")
+    $safeUrl      = $downloadUrl.Replace("'", "''")
+    $safeZip      = $zipFile.Replace("'", "''")
+
+    if ($logId -eq 0) {
+        $sql = "INSERT INTO $logTable
+                    (ReportYear, Status, RowsInStaging, RowsInserted, RowsUpdated,
+                     RowsSkipped, TotalRowsInTable, ScriptVersion, MachineName,
+                     RunByUser, DownloadUrl, FilePath, ErrorMessage, DurationSeconds)
+                VALUES
+                    ($ReportYear, '$status', $rowsInStaging, $rowsInserted, $rowsUpdated,
+                     $rowsSkipped, $totalRows, '$scriptVersion', '$safeMachine',
+                     '$safeUser', '$safeUrl', '$safeZip', '$errorMessage', $duration);
+                SELECT SCOPE_IDENTITY();"
+
+        $cmd = New-Object System.Data.SqlClient.SqlCommand($sql, $conn)
+        return [int]$cmd.ExecuteScalar()
+
+    } else {
+        $sql = "UPDATE $logTable SET
+                    Status           = '$status',
+                    RowsInStaging    = $rowsInStaging,
+                    RowsInserted     = $rowsInserted,
+                    RowsUpdated      = $rowsUpdated,
+                    RowsSkipped      = $rowsSkipped,
+                    TotalRowsInTable = $totalRows,
+                    ErrorMessage     = '$errorMessage',
+                    DurationSeconds  = $duration
+                WHERE LogId = $logId;"
+
+        $cmd = New-Object System.Data.SqlClient.SqlCommand($sql, $conn)
+        $cmd.ExecuteNonQuery() | Out-Null
+        return $logId
+    }
+}
+
+# Create initial log entry
+$logId = Write-DBLog -conn $connection -logId 0 -status "Running"
+Write-Host "Log entry created. LogId: $logId" -ForegroundColor Gray
+
+# ============================================================
+# Step 3: Check if Year Already Loaded
+# ============================================================
+Write-Host "Checking if $ReportYear data already exists..." -ForegroundColor Cyan
+
+$checkCmd = New-Object System.Data.SqlClient.SqlCommand(
+    "SELECT COUNT(*) FROM $sqlTable WHERE ReportYear = $ReportYear", $connection)
+$existingRows = [int]$checkCmd.ExecuteScalar()
+
+if ($existingRows -gt 0) {
+    Write-Host "Found $existingRows existing rows for $ReportYear." -ForegroundColor Yellow
+    Write-Host "Script will update changed rows and skip unchanged ones." -ForegroundColor Yellow
+} else {
+    Write-Host "No existing data for $ReportYear - full load." -ForegroundColor Green
+}
+
+# ============================================================
+# Step 4: Download or Manual Mode
+# ============================================================
+if ($ManualMode) {
+    Write-Host "Manual mode - skipping download." -ForegroundColor Yellow
+    Write-Host "Looking for ZIP at: $zipFile" -ForegroundColor Gray
+
+    if (-not (Test-Path $zipFile)) {
+        $errMsg = "ZIP file not found at: $zipFile"
+        Write-Host "Please manually copy the ZIP file to: $zipFile" -ForegroundColor Red
+        Write-Host "Download from: $downloadUrl" -ForegroundColor Red
+        Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+        Write-Error $errMsg
+        $connection.Close()
+        exit 1
+    }
+
+    $fileSize = (Get-Item $zipFile).Length
+    Write-Host "ZIP file size: $([math]::Round($fileSize/1MB, 2)) MB" -ForegroundColor Gray
+
+    if ($fileSize -lt 1MB) {
+        $errMsg = "ZIP file too small ($fileSize bytes) - likely corrupted or blocked."
+        Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+        Write-Error $errMsg
+        $connection.Close()
+        exit 1
+    }
+
+    Write-Host "ZIP file looks good." -ForegroundColor Green
+
+} else {
+    Write-Host "Downloading EIA-860 $ReportYear data..." -ForegroundColor Cyan
+    Write-Host "URL: $downloadUrl" -ForegroundColor Gray
+
+    # Create download folder if it doesn't exist
+    if (-not (Test-Path $downloadPath)) {
+        New-Item -ItemType Directory -Path $downloadPath -Force | Out-Null
+        Write-Host "Created directory: $downloadPath" -ForegroundColor Gray
+    }
+
+    # Delete old ZIP if exists
+    if (Test-Path $zipFile) {
+        Remove-Item $zipFile -Force
+        Write-Host "Removed old ZIP file." -ForegroundColor Gray
+    }
+
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile -ErrorAction Stop
+        $fileSize = (Get-Item $zipFile).Length
+        Write-Host "Downloaded: $([math]::Round($fileSize/1MB, 2)) MB" -ForegroundColor Green
+
+        # Verify download is not corrupted
+        if ($fileSize -lt 1MB) {
+            $errMsg = "Downloaded file too small ($fileSize bytes) - likely blocked by firewall."
+            Write-Host "Expected ~15MB but got $([math]::Round($fileSize/1MB, 2)) MB" -ForegroundColor Red
+            Write-Host "URL used: $downloadUrl" -ForegroundColor Red
+            Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+            Write-Error $errMsg
+            $connection.Close()
+            exit 1
+        }
+
+    } catch {
+        $errMsg = "Download failed: $_"
+        Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+        Write-Error $errMsg
+        $connection.Close()
+        exit 1
+    }
+}
+
+# ============================================================
+# Step 5: Extract ZIP File
+# ============================================================
+Write-Host "Extracting ZIP file..." -ForegroundColor Cyan
+
+try {
+    if (Test-Path $extractPath) {
+        Remove-Item $extractPath -Recurse -Force
+    }
+    Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+    Write-Host "Extracted to: $extractPath" -ForegroundColor Green
+} catch {
+    $errMsg = "Extraction failed: $_"
+    Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+    Write-Error $errMsg
+    $connection.Close()
+    exit 1
+}
+
+# ============================================================
+# Step 6: Find the Plant Excel File
+# ============================================================
+Write-Host "Looking for Plant Excel file..." -ForegroundColor Cyan
+
+$excelFile = Get-ChildItem -Path $extractPath -Filter "2__Plant*.xlsx" |
+             Select-Object -First 1
+
+if (-not $excelFile) {
+    $excelFile = Get-ChildItem -Path $extractPath -Filter "2_*Plant*.xlsx" |
+                 Select-Object -First 1
+}
+
+if (-not $excelFile) {
+    $errMsg = "Could not find Schedule 2 Plant file in: $extractPath"
+    Write-Host "Files found in extract folder:" -ForegroundColor Yellow
+    Get-ChildItem $extractPath | ForEach-Object { Write-Host "  $($_.Name)" }
+    Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+    Write-Error $errMsg
+    $connection.Close()
+    exit 1
+}
+
+Write-Host "Found Plant file: $($excelFile.Name)" -ForegroundColor Green
+
+# ============================================================
+# Step 7: Read Excel File Using ImportExcel
+# ============================================================
+Write-Host "Reading Excel file..." -ForegroundColor Cyan
+
+try {
+    $excelData = Import-Excel -Path $excelFile.FullName `
+                              -WorksheetName "Plant" `
+                              -StartRow 2 `
+                              -ErrorAction Stop
+
+    Write-Host "Read $($excelData.Count) rows from Excel." -ForegroundColor Green
+
+} catch {
+    $errMsg = "Failed to read Excel file: $_"
+    Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+    Write-Error $errMsg
+    $connection.Close()
+    exit 1
+}
+
+# ============================================================
+# Step 8: Build DataTable
+# ============================================================
+Write-Host "Building data table..." -ForegroundColor Cyan
+
+$dataTable = New-Object System.Data.DataTable
+
+@("ReportYear","UtilityId","UtilityName","PlantCode","PlantName",
+  "StreetAddress","City","State","Zip","County","Latitude","Longitude",
+  "NercRegion","BalancingAuthority","WaterSource","PrimaryPurpose") | ForEach-Object {
+    $dataTable.Columns.Add($_, [string]) | Out-Null
+}
+
+$rowCount = 0
+
+foreach ($row in $excelData) {
+
+    if (-not $row.'Plant Name') { continue }
+
+    $dataRow = $dataTable.NewRow()
+    $dataRow["ReportYear"]         = $ReportYear
+    $dataRow["UtilityId"]          = [string]$row.'Utility ID'
+    $dataRow["UtilityName"]        = [string]$row.'Utility Name'
+    $dataRow["PlantCode"]          = [string]$row.'Plant Code'
+    $dataRow["PlantName"]          = [string]$row.'Plant Name'
+    $dataRow["StreetAddress"]      = [string]$row.'Street Address'
+    $dataRow["City"]               = [string]$row.'City'
+    $dataRow["State"]              = [string]$row.'State'
+    $dataRow["Zip"]                = [string]$row.'Zip'
+    $dataRow["County"]             = [string]$row.'County'
+    $dataRow["Latitude"]           = [string]$row.'Latitude'
+    $dataRow["Longitude"]          = [string]$row.'Longitude'
+    $dataRow["NercRegion"]         = [string]$row.'NERC Region'
+    $dataRow["BalancingAuthority"] = [string]$row.'Balancing Authority Code'
+    $dataRow["WaterSource"]        = [string]$row.'Water Source'
+    $dataRow["PrimaryPurpose"]     = [string]$row.'Primary Purpose'
+    $dataTable.Rows.Add($dataRow)
+    $rowCount++
+
+    if ($rowCount % 500 -eq 0) {
+        Write-Host "  Processed $rowCount rows..." -ForegroundColor Gray
+    }
+}
+
+Write-Host "Built data table with $rowCount rows." -ForegroundColor Green
+
+# ============================================================
+# Step 9: Bulk Insert into Staging Table
+# ============================================================
+Write-Host "Clearing staging table..." -ForegroundColor Cyan
+
+try {
+    $clearCmd = New-Object System.Data.SqlClient.SqlCommand(
+        "TRUNCATE TABLE $stagingTable", $connection)
+    $clearCmd.ExecuteNonQuery() | Out-Null
+    Write-Host "Staging table cleared." -ForegroundColor Gray
+} catch {
+    $errMsg = "Failed to clear staging table: $_"
+    Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+    Write-Error $errMsg
+    $connection.Close()
+    exit 1
+}
+
+Write-Host "Bulk loading into staging table..." -ForegroundColor Cyan
+
+try {
+    $bulkCopy                      = New-Object System.Data.SqlClient.SqlBulkCopy($connection)
+    $bulkCopy.DestinationTableName = $stagingTable
+    $bulkCopy.BatchSize            = 1000
+    $bulkCopy.BulkCopyTimeout      = 300
+
+    foreach ($col in $dataTable.Columns) {
+        $bulkCopy.ColumnMappings.Add($col.ColumnName, $col.ColumnName) | Out-Null
+    }
+
+    $bulkCopy.WriteToServer($dataTable)
+    $bulkCopy.Close()
+    Write-Host "Staging table loaded with $rowCount rows." -ForegroundColor Green
+
+} catch {
+    $errMsg = "Bulk copy to staging failed: $_"
+    Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+    Write-Error $errMsg
+    $connection.Close()
+    exit 1
+}
+
+# ============================================================
+# Step 10: Run MERGE Stored Procedure
+# ============================================================
+Write-Host "Merging staging data into main table..." -ForegroundColor Cyan
+
+try {
+    $mergeCmd                = New-Object System.Data.SqlClient.SqlCommand(
+        "EXEC $storedProc", $connection)
+    $mergeCmd.CommandTimeout = 300
+
+    $reader           = $mergeCmd.ExecuteReader()
+    $rowsInserted     = 0
+    $rowsUpdated      = 0
+    $rowsSkipped      = 0
+    $rowsInStaging    = 0
+    $totalRowsInTable = 0
+
+    if ($reader.Read()) {
+        $rowsInserted     = [int]$reader["RowsInserted"]
+        $rowsUpdated      = [int]$reader["RowsUpdated"]
+        $rowsSkipped      = [int]$reader["RowsSkipped"]
+        $rowsInStaging    = [int]$reader["RowsInStaging"]
+        $totalRowsInTable = [int]$reader["TotalRowsInTable"]
+    }
+    $reader.Close()
+
+} catch {
+    $errMsg = "Merge procedure failed: $_"
+    Write-DBLog -conn $connection -logId $logId -status "Failed" -errorMessage $errMsg
+    Write-Error $errMsg
+    $connection.Close()
+    exit 1
+}
+
+# ============================================================
+# Step 11: Update Log with Final Results
+# ============================================================
+Write-DBLog `
+    -conn $connection `
+    -logId $logId `
+    -status "Success" `
+    -rowsInStaging $rowsInStaging `
+    -rowsInserted $rowsInserted `
+    -rowsUpdated $rowsUpdated `
+    -rowsSkipped $rowsSkipped `
+    -totalRows $totalRowsInTable
+
+# ============================================================
+# Step 12: Print Summary
+# ============================================================
+$duration = [int](New-TimeSpan -Start $startTime -End (Get-Date)).TotalSeconds
+
+Write-Host "`n=====================================" -ForegroundColor Cyan
+Write-Host " EIA-860 Load Summary"                  -ForegroundColor Cyan
+Write-Host "=====================================" -ForegroundColor Cyan
+Write-Host " Report Year:     $ReportYear"          -ForegroundColor White
+Write-Host " Schema:          EIA"                  -ForegroundColor White
+Write-Host " URL Used:        $downloadUrl"         -ForegroundColor White
+Write-Host " Rows in File:    $rowsInStaging"       -ForegroundColor White
+Write-Host " Rows Inserted:   $rowsInserted"        -ForegroundColor Green
+Write-Host " Rows Updated:    $rowsUpdated"         -ForegroundColor Yellow
+Write-Host " Rows Skipped:    $rowsSkipped"         -ForegroundColor Gray
+Write-Host " Total in Table:  $totalRowsInTable"    -ForegroundColor White
+Write-Host " Duration:        $duration seconds"    -ForegroundColor White
+Write-Host " Log ID:          $logId"               -ForegroundColor White
+Write-Host "=====================================" -ForegroundColor Cyan
+
+# ============================================================
+# Step 13: Cleanup
+# ============================================================
+$connection.Close()
+Write-Host "Connection closed." -ForegroundColor Gray
+Write-Host "`nDone! EIA-860 Schedule 2 Plant Data loaded successfully." -ForegroundColor Green
