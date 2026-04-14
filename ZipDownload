@@ -1,0 +1,266 @@
+CREATE TABLE EIA860_PlantData (
+    Id                  INT IDENTITY(1,1) PRIMARY KEY,
+    ReportYear          INT,
+    UtilityId           NVARCHAR(50),
+    UtilityName         NVARCHAR(255),
+    PlantCode           NVARCHAR(50),
+    PlantName           NVARCHAR(255),
+    StreetAddress       NVARCHAR(255),
+    City                NVARCHAR(100),
+    State               NVARCHAR(10),
+    Zip                 NVARCHAR(20),
+    County              NVARCHAR(100),
+    Latitude            FLOAT,
+    Longitude           FLOAT,
+    NercRegion          NVARCHAR(50),
+    BalancingAuthority  NVARCHAR(100),
+    WaterSource         NVARCHAR(255),
+    PrimaryPurpose      NVARCHAR(100),
+    LoadedAt            DATETIME DEFAULT GETDATE()
+);
+
+
+
+# ============================================================
+# EIA-860 Schedule 2 Plant Data -> SQL Server ETL Script
+# ============================================================
+
+# --- Configuration ---
+$reportYear    = 2023                          # Change year as needed
+$sqlServer     = "YOUR_SERVER_NAME"
+$sqlDatabase   = "YOUR_DATABASE_NAME"
+$sqlTable      = "EIA860_PlantData"
+$downloadPath  = "C:\Temp\EIA860"
+$zipFile       = "$downloadPath\eia860_$reportYear.zip"
+$extractPath   = "$downloadPath\eia860_$reportYear"
+
+# EIA-860 ZIP download URL
+$downloadUrl = "https://www.eia.gov/electricity/data/eia860/xls/eia860$reportYear.zip"
+
+# ============================================================
+# Step 1: Create download directory
+# ============================================================
+if (-not (Test-Path $downloadPath)) {
+    New-Item -ItemType Directory -Path $downloadPath | Out-Null
+    Write-Host "Created directory: $downloadPath" -ForegroundColor Cyan
+}
+
+# ============================================================
+# Step 2: Download the ZIP file
+# ============================================================
+Write-Host "Downloading EIA-860 $reportYear data..." -ForegroundColor Cyan
+
+try {
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile -ErrorAction Stop
+    Write-Host "Downloaded: $zipFile" -ForegroundColor Green
+} catch {
+    Write-Error "Download failed: $_"
+    exit 1
+}
+
+# ============================================================
+# Step 3: Extract the ZIP file
+# ============================================================
+Write-Host "Extracting ZIP file..." -ForegroundColor Cyan
+
+if (Test-Path $extractPath) {
+    Remove-Item $extractPath -Recurse -Force
+}
+
+try {
+    Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+    Write-Host "Extracted to: $extractPath" -ForegroundColor Green
+} catch {
+    Write-Error "Extraction failed: $_"
+    exit 1
+}
+
+# ============================================================
+# Step 4: Find the Plant (Schedule 2) Excel file
+# ============================================================
+$excelFile = Get-ChildItem -Path $extractPath -Filter "2__Plant*.xlsx" | 
+             Select-Object -First 1
+
+if (-not $excelFile) {
+    # Try alternate naming convention
+    $excelFile = Get-ChildItem -Path $extractPath -Filter "2_*Plant*.xlsx" | 
+                 Select-Object -First 1
+}
+
+if (-not $excelFile) {
+    Write-Error "Could not find Schedule 2 Plant file in: $extractPath"
+    Write-Host "Files found:" -ForegroundColor Yellow
+    Get-ChildItem $extractPath | ForEach-Object { Write-Host "  $($_.Name)" }
+    exit 1
+}
+
+Write-Host "Found Plant file: $($excelFile.Name)" -ForegroundColor Green
+
+# ============================================================
+# Step 5: Read Excel file using COM object
+# ============================================================
+Write-Host "Reading Excel file..." -ForegroundColor Cyan
+
+$excel = New-Object -ComObject Excel.Application
+$excel.Visible = $false
+$excel.DisplayAlerts = $false
+
+try {
+    $workbook  = $excel.Workbooks.Open($excelFile.FullName)
+    
+    # Schedule 2 Plant data is on the "Plant" tab
+    $worksheet = $workbook.Sheets | Where-Object { $_.Name -like "*Plant*" } | 
+                 Select-Object -First 1
+
+    if (-not $worksheet) {
+        $worksheet = $workbook.Sheets.Item(1)
+        Write-Host "Using first sheet: $($worksheet.Name)" -ForegroundColor Yellow
+    } else {
+        Write-Host "Using sheet: $($worksheet.Name)" -ForegroundColor Green
+    }
+
+    # Find the last row with data
+    $lastRow = $worksheet.UsedRange.Rows.Count
+    Write-Host "Found $lastRow rows (including header)." -ForegroundColor Green
+
+    # ============================================================
+    # Step 6: Connect to SQL Server
+    # ============================================================
+    Write-Host "Connecting to SQL Server..." -ForegroundColor Cyan
+
+    $connectionString = "Server=$sqlServer;Database=$sqlDatabase;Integrated Security=True;"
+    $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+    
+    try {
+        $connection.Open()
+        Write-Host "Connected to SQL Server." -ForegroundColor Green
+    } catch {
+        Write-Error "SQL connection failed: $_"
+        exit 1
+    }
+
+    # ============================================================
+    # Step 7: Map column headers from row 2 (EIA-860 has 2 header rows)
+    # ============================================================
+    # EIA-860 Excel files typically have 2 header rows; data starts at row 3
+    $headerRow   = 2
+    $dataStartRow = 3
+
+    # Read headers to find column positions
+    $headers = @{}
+    $lastCol = $worksheet.UsedRange.Columns.Count
+
+    for ($col = 1; $col -le $lastCol; $col++) {
+        $cellValue = $worksheet.Cells.Item($headerRow, $col).Text.Trim()
+        if ($cellValue -ne "") {
+            $headers[$cellValue] = $col
+        }
+    }
+
+    Write-Host "Columns found: $($headers.Keys -join ', ')" -ForegroundColor Gray
+
+    # Helper function to safely get cell value
+    function Get-CellValue($sheet, $row, $colName) {
+        if ($headers.ContainsKey($colName)) {
+            $val = $sheet.Cells.Item($row, $headers[$colName]).Text
+            return $val.Trim().Replace("'", "''")  # Escape single quotes for SQL
+        }
+        return ""
+    }
+
+    # ============================================================
+    # Step 8: Use SqlBulkCopy for fast insert
+    # ============================================================
+    $dataTable = New-Object System.Data.DataTable
+
+    # Add columns matching SQL table
+    $dataTable.Columns.Add("ReportYear",         [int])    | Out-Null
+    $dataTable.Columns.Add("UtilityId",           [string]) | Out-Null
+    $dataTable.Columns.Add("UtilityName",         [string]) | Out-Null
+    $dataTable.Columns.Add("PlantCode",           [string]) | Out-Null
+    $dataTable.Columns.Add("PlantName",           [string]) | Out-Null
+    $dataTable.Columns.Add("StreetAddress",       [string]) | Out-Null
+    $dataTable.Columns.Add("City",                [string]) | Out-Null
+    $dataTable.Columns.Add("State",               [string]) | Out-Null
+    $dataTable.Columns.Add("Zip",                 [string]) | Out-Null
+    $dataTable.Columns.Add("County",              [string]) | Out-Null
+    $dataTable.Columns.Add("Latitude",            [string]) | Out-Null
+    $dataTable.Columns.Add("Longitude",           [string]) | Out-Null
+    $dataTable.Columns.Add("NercRegion",          [string]) | Out-Null
+    $dataTable.Columns.Add("BalancingAuthority",  [string]) | Out-Null
+    $dataTable.Columns.Add("WaterSource",         [string]) | Out-Null
+    $dataTable.Columns.Add("PrimaryPurpose",      [string]) | Out-Null
+
+    $rowCount = 0
+
+    for ($row = $dataStartRow; $row -le $lastRow; $row++) {
+
+        # Skip empty rows
+        $plantName = $worksheet.Cells.Item($row, 1).Text.Trim()
+        if ($plantName -eq "") { continue }
+
+        $dataRow = $dataTable.NewRow()
+        $dataRow["ReportYear"]        = $reportYear
+        $dataRow["UtilityId"]         = Get-CellValue $worksheet $row "Utility ID"
+        $dataRow["UtilityName"]       = Get-CellValue $worksheet $row "Utility Name"
+        $dataRow["PlantCode"]         = Get-CellValue $worksheet $row "Plant Code"
+        $dataRow["PlantName"]         = Get-CellValue $worksheet $row "Plant Name"
+        $dataRow["StreetAddress"]     = Get-CellValue $worksheet $row "Street Address"
+        $dataRow["City"]              = Get-CellValue $worksheet $row "City"
+        $dataRow["State"]             = Get-CellValue $worksheet $row "State"
+        $dataRow["Zip"]               = Get-CellValue $worksheet $row "Zip"
+        $dataRow["County"]            = Get-CellValue $worksheet $row "County"
+        $dataRow["Latitude"]          = Get-CellValue $worksheet $row "Latitude"
+        $dataRow["Longitude"]         = Get-CellValue $worksheet $row "Longitude"
+        $dataRow["NercRegion"]        = Get-CellValue $worksheet $row "NERC Region"
+        $dataRow["BalancingAuthority"]= Get-CellValue $worksheet $row "Balancing Authority Code"
+        $dataRow["WaterSource"]       = Get-CellValue $worksheet $row "Water Source"
+        $dataRow["PrimaryPurpose"]    = Get-CellValue $worksheet $row "Primary Purpose"
+
+        $dataTable.Rows.Add($dataRow)
+        $rowCount++
+
+        # Progress update every 500 rows
+        if ($rowCount % 500 -eq 0) {
+            Write-Host "  Processed $rowCount rows..." -ForegroundColor Gray
+        }
+    }
+
+    Write-Host "Read $rowCount data rows from Excel." -ForegroundColor Green
+
+    # ============================================================
+    # Step 9: Bulk insert into SQL Server
+    # ============================================================
+    Write-Host "Bulk loading into SQL Server..." -ForegroundColor Cyan
+
+    $bulkCopy = New-Object System.Data.SqlClient.SqlBulkCopy($connection)
+    $bulkCopy.DestinationTableName = $sqlTable
+    $bulkCopy.BatchSize = 1000
+    $bulkCopy.BulkCopyTimeout = 300
+
+    # Map DataTable columns to SQL columns
+    foreach ($col in $dataTable.Columns) {
+        $bulkCopy.ColumnMappings.Add($col.ColumnName, $col.ColumnName) | Out-Null
+    }
+
+    try {
+        $bulkCopy.WriteToServer($dataTable)
+        Write-Host "Successfully loaded $rowCount rows into $sqlTable." -ForegroundColor Green
+    } catch {
+        Write-Error "Bulk copy failed: $_"
+    } finally {
+        $bulkCopy.Close()
+    }
+
+} finally {
+    # ============================================================
+    # Step 10: Cleanup
+    # ============================================================
+    if ($workbook)  { $workbook.Close($false) }
+    if ($excel)     { $excel.Quit() }
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+    $connection.Close()
+    Write-Host "Cleanup complete." -ForegroundColor Cyan
+}
+
+Write-Host "`nDone! EIA-860 Schedule 2 Plant Data loaded successfully." -ForegroundColor Green
