@@ -1,0 +1,660 @@
+USE YOUR_DATABASE_NAME;
+GO
+
+-- ============================================================
+-- Create EIA Schema if not exists
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'EIA')
+BEGIN
+    EXEC('CREATE SCHEMA EIA');
+    PRINT 'Created schema: EIA';
+END
+GO
+
+-- ============================================================
+-- Table: Utility
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_UtilityData' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_UtilityData (
+        Id                  INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear          INT,
+        UtilityId           NVARCHAR(50),
+        UtilityName         NVARCHAR(255),
+        StreetAddress       NVARCHAR(255),
+        City                NVARCHAR(100),
+        State               NVARCHAR(10),
+        Zip                 NVARCHAR(20),
+        Phone               NVARCHAR(50),
+        EntityType          NVARCHAR(100),
+        LoadedAt            DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_UtilityData';
+END
+GO
+
+-- ============================================================
+-- Table: Generator (Operable, Proposed, Retired)
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_GeneratorData' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_GeneratorData (
+        Id                      INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear              INT,
+        UtilityId               NVARCHAR(50),
+        UtilityName             NVARCHAR(255),
+        PlantCode               NVARCHAR(50),
+        PlantName               NVARCHAR(255),
+        State                   NVARCHAR(10),
+        County                  NVARCHAR(100),
+        GeneratorId             NVARCHAR(50),
+        UnitCode                NVARCHAR(50),
+        OwnershipType           NVARCHAR(50),
+        Duct                    NVARCHAR(10),
+        Topping                 NVARCHAR(10),
+        SectorName              NVARCHAR(100),
+        GeneratorStatus         NVARCHAR(50),
+        OperatingYear           NVARCHAR(10),
+        OperatingMonth          NVARCHAR(10),
+        RetirementYear          NVARCHAR(10),
+        RetirementMonth         NVARCHAR(10),
+        PrimeMover              NVARCHAR(50),
+        EnergySource1           NVARCHAR(50),
+        EnergySource2           NVARCHAR(50),
+        EnergySource3           NVARCHAR(50),
+        EnergySource4           NVARCHAR(50),
+        EnergySource5           NVARCHAR(50),
+        EnergySource6           NVARCHAR(50),
+        NameplateCapacityMW     NVARCHAR(50),
+        SummerCapacityMW        NVARCHAR(50),
+        WinterCapacityMW        NVARCHAR(50),
+        StatusTab               NVARCHAR(20),  -- Operable, Proposed, Retired
+        LoadedAt                DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_GeneratorData';
+END
+GO
+
+-- ============================================================
+-- Table: Wind
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_WindData' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_WindData (
+        Id                      INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear              INT,
+        UtilityId               NVARCHAR(50),
+        UtilityName             NVARCHAR(255),
+        PlantCode               NVARCHAR(50),
+        PlantName               NVARCHAR(255),
+        State                   NVARCHAR(10),
+        GeneratorId             NVARCHAR(50),
+        TurbineManufacturer     NVARCHAR(255),
+        TurbineModel            NVARCHAR(255),
+        NumberOfTurbines        NVARCHAR(50),
+        TurbineRatedCapacityMW  NVARCHAR(50),
+        HubHeight               NVARCHAR(50),
+        RotorDiameter           NVARCHAR(50),
+        WindQualityClass        NVARCHAR(50),
+        StatusTab               NVARCHAR(20),
+        LoadedAt                DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_WindData';
+END
+GO
+
+-- ============================================================
+-- Table: Solar
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_SolarData' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_SolarData (
+        Id                      INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear              INT,
+        UtilityId               NVARCHAR(50),
+        UtilityName             NVARCHAR(255),
+        PlantCode               NVARCHAR(50),
+        PlantName               NVARCHAR(255),
+        State                   NVARCHAR(10),
+        GeneratorId             NVARCHAR(50),
+        SingleAxisTracking      NVARCHAR(50),
+        DualAxisTracking        NVARCHAR(50),
+        FixedTilt               NVARCHAR(50),
+        SolarTechnology         NVARCHAR(100),
+        DCNetCapacity           NVARCHAR(50),
+        TiltAngle               NVARCHAR(50),
+        AzimuthAngle            NVARCHAR(50),
+        StatusTab               NVARCHAR(20),
+        LoadedAt                DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_SolarData';
+END
+GO
+
+-- ============================================================
+-- Table: Energy Storage
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_StorageData' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_StorageData (
+        Id                      INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear              INT,
+        UtilityId               NVARCHAR(50),
+        UtilityName             NVARCHAR(255),
+        PlantCode               NVARCHAR(50),
+        PlantName               NVARCHAR(255),
+        State                   NVARCHAR(10),
+        GeneratorId             NVARCHAR(50),
+        StorageTechnology       NVARCHAR(100),
+        EnergyCapacityMWH       NVARCHAR(50),
+        MaxChargeRateMW         NVARCHAR(50),
+        MaxDischargeRateMW      NVARCHAR(50),
+        StorageEnclosureType    NVARCHAR(100),
+        StatusTab               NVARCHAR(20),
+        LoadedAt                DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_StorageData';
+END
+GO
+
+-- ============================================================
+-- Table: Multifuel
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_MultiFuelData' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_MultiFuelData (
+        Id                      INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear              INT,
+        UtilityId               NVARCHAR(50),
+        UtilityName             NVARCHAR(255),
+        PlantCode               NVARCHAR(50),
+        PlantName               NVARCHAR(255),
+        State                   NVARCHAR(10),
+        GeneratorId             NVARCHAR(50),
+        FuelSwitchCapable       NVARCHAR(10),
+        AltEnergySource1        NVARCHAR(50),
+        AltEnergySource2        NVARCHAR(50),
+        AltEnergySource3        NVARCHAR(50),
+        StatusTab               NVARCHAR(20),
+        LoadedAt                DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_MultiFuelData';
+END
+GO
+
+-- ============================================================
+-- Table: Ownership
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_OwnerData' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_OwnerData (
+        Id                      INT IDENTITY(1,1) PRIMARY KEY,
+        ReportYear              INT,
+        UtilityId               NVARCHAR(50),
+        UtilityName             NVARCHAR(255),
+        PlantCode               NVARCHAR(50),
+        PlantName               NVARCHAR(255),
+        State                   NVARCHAR(10),
+        GeneratorId             NVARCHAR(50),
+        OwnerId                 NVARCHAR(50),
+        OwnerName               NVARCHAR(255),
+        OwnerState              NVARCHAR(10),
+        OwnershipPercent        NVARCHAR(50),
+        LoadedAt                DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_OwnerData';
+END
+GO
+
+-- ============================================================
+-- Staging Tables (mirrors of each main table without identity)
+-- ============================================================
+
+-- Utility Staging
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_UtilityData_Staging' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_UtilityData_Staging (
+        ReportYear INT, UtilityId NVARCHAR(50), UtilityName NVARCHAR(255),
+        StreetAddress NVARCHAR(255), City NVARCHAR(100), State NVARCHAR(10),
+        Zip NVARCHAR(20), Phone NVARCHAR(50), EntityType NVARCHAR(100),
+        LoadedAt DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_UtilityData_Staging';
+END
+GO
+
+-- Generator Staging
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_GeneratorData_Staging' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_GeneratorData_Staging (
+        ReportYear INT, UtilityId NVARCHAR(50), UtilityName NVARCHAR(255),
+        PlantCode NVARCHAR(50), PlantName NVARCHAR(255), State NVARCHAR(10),
+        County NVARCHAR(100), GeneratorId NVARCHAR(50), UnitCode NVARCHAR(50),
+        OwnershipType NVARCHAR(50), Duct NVARCHAR(10), Topping NVARCHAR(10),
+        SectorName NVARCHAR(100), GeneratorStatus NVARCHAR(50),
+        OperatingYear NVARCHAR(10), OperatingMonth NVARCHAR(10),
+        RetirementYear NVARCHAR(10), RetirementMonth NVARCHAR(10),
+        PrimeMover NVARCHAR(50), EnergySource1 NVARCHAR(50),
+        EnergySource2 NVARCHAR(50), EnergySource3 NVARCHAR(50),
+        EnergySource4 NVARCHAR(50), EnergySource5 NVARCHAR(50),
+        EnergySource6 NVARCHAR(50), NameplateCapacityMW NVARCHAR(50),
+        SummerCapacityMW NVARCHAR(50), WinterCapacityMW NVARCHAR(50),
+        StatusTab NVARCHAR(20), LoadedAt DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_GeneratorData_Staging';
+END
+GO
+
+-- Wind Staging
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_WindData_Staging' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_WindData_Staging (
+        ReportYear INT, UtilityId NVARCHAR(50), UtilityName NVARCHAR(255),
+        PlantCode NVARCHAR(50), PlantName NVARCHAR(255), State NVARCHAR(10),
+        GeneratorId NVARCHAR(50), TurbineManufacturer NVARCHAR(255),
+        TurbineModel NVARCHAR(255), NumberOfTurbines NVARCHAR(50),
+        TurbineRatedCapacityMW NVARCHAR(50), HubHeight NVARCHAR(50),
+        RotorDiameter NVARCHAR(50), WindQualityClass NVARCHAR(50),
+        StatusTab NVARCHAR(20), LoadedAt DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_WindData_Staging';
+END
+GO
+
+-- Solar Staging
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_SolarData_Staging' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_SolarData_Staging (
+        ReportYear INT, UtilityId NVARCHAR(50), UtilityName NVARCHAR(255),
+        PlantCode NVARCHAR(50), PlantName NVARCHAR(255), State NVARCHAR(10),
+        GeneratorId NVARCHAR(50), SingleAxisTracking NVARCHAR(50),
+        DualAxisTracking NVARCHAR(50), FixedTilt NVARCHAR(50),
+        SolarTechnology NVARCHAR(100), DCNetCapacity NVARCHAR(50),
+        TiltAngle NVARCHAR(50), AzimuthAngle NVARCHAR(50),
+        StatusTab NVARCHAR(20), LoadedAt DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_SolarData_Staging';
+END
+GO
+
+-- Storage Staging
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_StorageData_Staging' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_StorageData_Staging (
+        ReportYear INT, UtilityId NVARCHAR(50), UtilityName NVARCHAR(255),
+        PlantCode NVARCHAR(50), PlantName NVARCHAR(255), State NVARCHAR(10),
+        GeneratorId NVARCHAR(50), StorageTechnology NVARCHAR(100),
+        EnergyCapacityMWH NVARCHAR(50), MaxChargeRateMW NVARCHAR(50),
+        MaxDischargeRateMW NVARCHAR(50), StorageEnclosureType NVARCHAR(100),
+        StatusTab NVARCHAR(20), LoadedAt DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_StorageData_Staging';
+END
+GO
+
+-- MultiFuel Staging
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_MultiFuelData_Staging' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_MultiFuelData_Staging (
+        ReportYear INT, UtilityId NVARCHAR(50), UtilityName NVARCHAR(255),
+        PlantCode NVARCHAR(50), PlantName NVARCHAR(255), State NVARCHAR(10),
+        GeneratorId NVARCHAR(50), FuelSwitchCapable NVARCHAR(10),
+        AltEnergySource1 NVARCHAR(50), AltEnergySource2 NVARCHAR(50),
+        AltEnergySource3 NVARCHAR(50), StatusTab NVARCHAR(20),
+        LoadedAt DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_MultiFuelData_Staging';
+END
+GO
+
+-- Owner Staging
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE t.name = 'EIA860_OwnerData_Staging' AND s.name = 'EIA')
+BEGIN
+    CREATE TABLE EIA.EIA860_OwnerData_Staging (
+        ReportYear INT, UtilityId NVARCHAR(50), UtilityName NVARCHAR(255),
+        PlantCode NVARCHAR(50), PlantName NVARCHAR(255), State NVARCHAR(10),
+        GeneratorId NVARCHAR(50), OwnerId NVARCHAR(50), OwnerName NVARCHAR(255),
+        OwnerState NVARCHAR(10), OwnershipPercent NVARCHAR(50),
+        LoadedAt DATETIME DEFAULT GETDATE()
+    );
+    PRINT 'Created: EIA.EIA860_OwnerData_Staging';
+END
+GO
+
+-- ============================================================
+-- Stored Procedure: Merge All Tables
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860AllData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860AllData;
+GO
+
+CREATE PROCEDURE EIA.usp_MergeEIA860AllData
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @TotalInserted INT = 0;
+    DECLARE @TotalUpdated INT = 0;
+
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    -- --------------------------------------------------------
+    -- MERGE: Utility
+    -- --------------------------------------------------------
+    DELETE @MergeOutput;
+    MERGE EIA.EIA860_UtilityData AS target
+    USING EIA.EIA860_UtilityData_Staging AS source
+        ON target.ReportYear = source.ReportYear
+        AND target.UtilityId = source.UtilityId
+    WHEN MATCHED AND (
+        ISNULL(target.UtilityName,'')   != ISNULL(source.UtilityName,'') OR
+        ISNULL(target.EntityType,'')    != ISNULL(source.EntityType,'')  OR
+        ISNULL(target.State,'')         != ISNULL(source.State,'')
+    )
+    THEN UPDATE SET
+        target.UtilityName   = source.UtilityName,
+        target.StreetAddress = source.StreetAddress,
+        target.City          = source.City,
+        target.State         = source.State,
+        target.Zip           = source.Zip,
+        target.Phone         = source.Phone,
+        target.EntityType    = source.EntityType,
+        target.LoadedAt      = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, StreetAddress, City,
+                 State, Zip, Phone, EntityType)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.StreetAddress, source.City, source.State, source.Zip,
+            source.Phone, source.EntityType)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+           @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+    SET @TotalInserted += ISNULL(@InsertCount,0);
+    SET @TotalUpdated  += ISNULL(@UpdateCount,0);
+    TRUNCATE TABLE EIA.EIA860_UtilityData_Staging;
+
+    -- --------------------------------------------------------
+    -- MERGE: Generator
+    -- --------------------------------------------------------
+    DELETE @MergeOutput;
+    MERGE EIA.EIA860_GeneratorData AS target
+    USING EIA.EIA860_GeneratorData_Staging AS source
+        ON target.ReportYear  = source.ReportYear
+        AND target.PlantCode  = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab  = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.GeneratorStatus,'')     != ISNULL(source.GeneratorStatus,'') OR
+        ISNULL(target.NameplateCapacityMW,'') != ISNULL(source.NameplateCapacityMW,'') OR
+        ISNULL(target.SummerCapacityMW,'')    != ISNULL(source.SummerCapacityMW,'') OR
+        ISNULL(target.EnergySource1,'')       != ISNULL(source.EnergySource1,'')
+    )
+    THEN UPDATE SET
+        target.UtilityId           = source.UtilityId,
+        target.UtilityName         = source.UtilityName,
+        target.PlantName           = source.PlantName,
+        target.GeneratorStatus     = source.GeneratorStatus,
+        target.OperatingYear       = source.OperatingYear,
+        target.OperatingMonth      = source.OperatingMonth,
+        target.RetirementYear      = source.RetirementYear,
+        target.RetirementMonth     = source.RetirementMonth,
+        target.PrimeMover          = source.PrimeMover,
+        target.EnergySource1       = source.EnergySource1,
+        target.EnergySource2       = source.EnergySource2,
+        target.EnergySource3       = source.EnergySource3,
+        target.EnergySource4       = source.EnergySource4,
+        target.EnergySource5       = source.EnergySource5,
+        target.EnergySource6       = source.EnergySource6,
+        target.NameplateCapacityMW = source.NameplateCapacityMW,
+        target.SummerCapacityMW    = source.SummerCapacityMW,
+        target.WinterCapacityMW    = source.WinterCapacityMW,
+        target.LoadedAt            = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, County, GeneratorId, UnitCode, OwnershipType, Duct,
+                 Topping, SectorName, GeneratorStatus, OperatingYear,
+                 OperatingMonth, RetirementYear, RetirementMonth, PrimeMover,
+                 EnergySource1, EnergySource2, EnergySource3, EnergySource4,
+                 EnergySource5, EnergySource6, NameplateCapacityMW,
+                 SummerCapacityMW, WinterCapacityMW, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State, source.County,
+            source.GeneratorId, source.UnitCode, source.OwnershipType,
+            source.Duct, source.Topping, source.SectorName,
+            source.GeneratorStatus, source.OperatingYear, source.OperatingMonth,
+            source.RetirementYear, source.RetirementMonth, source.PrimeMover,
+            source.EnergySource1, source.EnergySource2, source.EnergySource3,
+            source.EnergySource4, source.EnergySource5, source.EnergySource6,
+            source.NameplateCapacityMW, source.SummerCapacityMW,
+            source.WinterCapacityMW, source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+           @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+    SET @TotalInserted += ISNULL(@InsertCount,0);
+    SET @TotalUpdated  += ISNULL(@UpdateCount,0);
+    TRUNCATE TABLE EIA.EIA860_GeneratorData_Staging;
+
+    -- --------------------------------------------------------
+    -- MERGE: Wind
+    -- --------------------------------------------------------
+    DELETE @MergeOutput;
+    MERGE EIA.EIA860_WindData AS target
+    USING EIA.EIA860_WindData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.TurbineManufacturer,'') != ISNULL(source.TurbineManufacturer,'') OR
+        ISNULL(target.NumberOfTurbines,'')    != ISNULL(source.NumberOfTurbines,'')
+    )
+    THEN UPDATE SET
+        target.TurbineManufacturer    = source.TurbineManufacturer,
+        target.TurbineModel           = source.TurbineModel,
+        target.NumberOfTurbines       = source.NumberOfTurbines,
+        target.TurbineRatedCapacityMW = source.TurbineRatedCapacityMW,
+        target.HubHeight              = source.HubHeight,
+        target.RotorDiameter          = source.RotorDiameter,
+        target.WindQualityClass       = source.WindQualityClass,
+        target.LoadedAt               = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, TurbineManufacturer, TurbineModel,
+                 NumberOfTurbines, TurbineRatedCapacityMW, HubHeight,
+                 RotorDiameter, WindQualityClass, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State, source.GeneratorId,
+            source.TurbineManufacturer, source.TurbineModel, source.NumberOfTurbines,
+            source.TurbineRatedCapacityMW, source.HubHeight, source.RotorDiameter,
+            source.WindQualityClass, source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+           @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+    SET @TotalInserted += ISNULL(@InsertCount,0);
+    SET @TotalUpdated  += ISNULL(@UpdateCount,0);
+    TRUNCATE TABLE EIA.EIA860_WindData_Staging;
+
+    -- --------------------------------------------------------
+    -- MERGE: Solar
+    -- --------------------------------------------------------
+    DELETE @MergeOutput;
+    MERGE EIA.EIA860_SolarData AS target
+    USING EIA.EIA860_SolarData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.SolarTechnology,'') != ISNULL(source.SolarTechnology,'') OR
+        ISNULL(target.DCNetCapacity,'')   != ISNULL(source.DCNetCapacity,'')
+    )
+    THEN UPDATE SET
+        target.SingleAxisTracking = source.SingleAxisTracking,
+        target.DualAxisTracking   = source.DualAxisTracking,
+        target.FixedTilt          = source.FixedTilt,
+        target.SolarTechnology    = source.SolarTechnology,
+        target.DCNetCapacity      = source.DCNetCapacity,
+        target.TiltAngle          = source.TiltAngle,
+        target.AzimuthAngle       = source.AzimuthAngle,
+        target.LoadedAt           = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, SingleAxisTracking, DualAxisTracking,
+                 FixedTilt, SolarTechnology, DCNetCapacity, TiltAngle,
+                 AzimuthAngle, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State, source.GeneratorId,
+            source.SingleAxisTracking, source.DualAxisTracking, source.FixedTilt,
+            source.SolarTechnology, source.DCNetCapacity, source.TiltAngle,
+            source.AzimuthAngle, source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+           @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+    SET @TotalInserted += ISNULL(@InsertCount,0);
+    SET @TotalUpdated  += ISNULL(@UpdateCount,0);
+    TRUNCATE TABLE EIA.EIA860_SolarData_Staging;
+
+    -- --------------------------------------------------------
+    -- MERGE: Storage
+    -- --------------------------------------------------------
+    DELETE @MergeOutput;
+    MERGE EIA.EIA860_StorageData AS target
+    USING EIA.EIA860_StorageData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.StorageTechnology,'')  != ISNULL(source.StorageTechnology,'') OR
+        ISNULL(target.EnergyCapacityMWH,'')  != ISNULL(source.EnergyCapacityMWH,'')
+    )
+    THEN UPDATE SET
+        target.StorageTechnology    = source.StorageTechnology,
+        target.EnergyCapacityMWH    = source.EnergyCapacityMWH,
+        target.MaxChargeRateMW      = source.MaxChargeRateMW,
+        target.MaxDischargeRateMW   = source.MaxDischargeRateMW,
+        target.StorageEnclosureType = source.StorageEnclosureType,
+        target.LoadedAt             = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, StorageTechnology, EnergyCapacityMWH,
+                 MaxChargeRateMW, MaxDischargeRateMW, StorageEnclosureType, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State, source.GeneratorId,
+            source.StorageTechnology, source.EnergyCapacityMWH,
+            source.MaxChargeRateMW, source.MaxDischargeRateMW,
+            source.StorageEnclosureType, source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+           @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+    SET @TotalInserted += ISNULL(@InsertCount,0);
+    SET @TotalUpdated  += ISNULL(@UpdateCount,0);
+    TRUNCATE TABLE EIA.EIA860_StorageData_Staging;
+
+    -- --------------------------------------------------------
+    -- MERGE: MultiFuel
+    -- --------------------------------------------------------
+    DELETE @MergeOutput;
+    MERGE EIA.EIA860_MultiFuelData AS target
+    USING EIA.EIA860_MultiFuelData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.AltEnergySource1,'') != ISNULL(source.AltEnergySource1,'') OR
+        ISNULL(target.FuelSwitchCapable,'') != ISNULL(source.FuelSwitchCapable,'')
+    )
+    THEN UPDATE SET
+        target.FuelSwitchCapable = source.FuelSwitchCapable,
+        target.AltEnergySource1  = source.AltEnergySource1,
+        target.AltEnergySource2  = source.AltEnergySource2,
+        target.AltEnergySource3  = source.AltEnergySource3,
+        target.LoadedAt          = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, FuelSwitchCapable, AltEnergySource1,
+                 AltEnergySource2, AltEnergySource3, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State, source.GeneratorId,
+            source.FuelSwitchCapable, source.AltEnergySource1,
+            source.AltEnergySource2, source.AltEnergySource3, source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+           @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+    SET @TotalInserted += ISNULL(@InsertCount,0);
+    SET @TotalUpdated  += ISNULL(@UpdateCount,0);
+    TRUNCATE TABLE EIA.EIA860_MultiFuelData_Staging;
+
+    -- --------------------------------------------------------
+    -- MERGE: Owner
+    -- --------------------------------------------------------
+    DELETE @MergeOutput;
+    MERGE EIA.EIA860_OwnerData AS target
+    USING EIA.EIA860_OwnerData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.OwnerId     = source.OwnerId
+    WHEN MATCHED AND (
+        ISNULL(target.OwnershipPercent,'') != ISNULL(source.OwnershipPercent,'')
+    )
+    THEN UPDATE SET
+        target.OwnerName       = source.OwnerName,
+        target.OwnerState      = source.OwnerState,
+        target.OwnershipPercent = source.OwnershipPercent,
+        target.LoadedAt        = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, OwnerId, OwnerName, OwnerState, OwnershipPercent)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State, source.GeneratorId,
+            source.OwnerId, source.OwnerName, source.OwnerState,
+            source.OwnershipPercent)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+           @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+    SET @TotalInserted += ISNULL(@InsertCount,0);
+    SET @TotalUpdated  += ISNULL(@UpdateCount,0);
+    TRUNCATE TABLE EIA.EIA860_OwnerData_Staging;
+
+    -- Return totals
+    SELECT @TotalInserted AS TotalInserted,
+           @TotalUpdated  AS TotalUpdated;
+END
+GO
+
+PRINT '============================================';
+PRINT 'All EIA-860 Full Suite objects created!';
+PRINT '============================================';
