@@ -1,1 +1,73 @@
 
+# ============================================================
+# EIA860_Diagnose.ps1
+# Run this FIRST to see exact file names, tab names, 
+# and column names before running any load scripts
+# ============================================================
+param(
+    [int]$ReportYear     = 2023,
+    [string]$ExtractPath = ""
+)
+
+. "E:\Scripts\EIA860_Shared.ps1"
+Import-ExcelModule
+
+$extractPath = if ($ExtractPath) { $ExtractPath } else { "E:\EIA860\eia860$ReportYear" }
+
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host " EIA-860 DIAGNOSTIC REPORT"                  -ForegroundColor Cyan
+Write-Host " Extract Path: $extractPath"                 -ForegroundColor Cyan
+Write-Host "=============================================" -ForegroundColor Cyan
+
+if (-not (Test-Path $extractPath)) {
+    Write-Error "Extract path not found: $extractPath"
+    exit 1
+}
+
+$files = Get-ChildItem $extractPath -Filter "*.xlsx"
+Write-Host "Found $($files.Count) Excel files" -ForegroundColor Green
+
+foreach ($file in $files) {
+    Write-Host "`n=============================================" -ForegroundColor Yellow
+    Write-Host " FILE: $($file.Name)"                          -ForegroundColor Yellow
+    Write-Host "=============================================" -ForegroundColor Yellow
+
+    try {
+        $pkg    = Open-ExcelPackage -Path $file.FullName
+        $sheets = $pkg.Workbook.Worksheets | ForEach-Object { $_.Name }
+        Close-ExcelPackage $pkg
+
+        Write-Host " Tabs:" -ForegroundColor Cyan
+        $sheets | ForEach-Object { Write-Host "   '$_'" -ForegroundColor White }
+
+        # Show columns for first data tab only
+        $firstDataTab = $sheets | Where-Object {
+            $_ -notlike "*Layout*" -and $_ -notlike "*Reference*" -and
+            $_ -notlike "*drop*" -and $_ -notlike "*List*" -and
+            $_ -notlike "*SCH*" -and $_ -notlike "*Info*"
+        } | Select-Object -First 1
+
+        if ($firstDataTab) {
+            Write-Host "`n Columns in tab '$firstDataTab':" -ForegroundColor Cyan
+            try {
+                $data = Import-Excel -Path $file.FullName -WorksheetName $firstDataTab -StartRow 2 -EndRow 3
+                if ($data -and $data.Count -gt 0) {
+                    $data[0].PSObject.Properties.Name | ForEach-Object {
+                        Write-Host "   '$_'" -ForegroundColor Gray
+                    }
+                } else {
+                    Write-Host "   (no data rows found)" -ForegroundColor Red
+                }
+            } catch {
+                Write-Host "   Error reading columns: $_" -ForegroundColor Red
+            }
+        }
+    } catch {
+        Write-Host " Error reading file: $_" -ForegroundColor Red
+    }
+}
+
+Write-Host "`n=============================================" -ForegroundColor Cyan
+Write-Host " DIAGNOSTIC COMPLETE"                          -ForegroundColor Cyan
+Write-Host " Copy the output above and share it"          -ForegroundColor Cyan
+Write-Host "=============================================" -ForegroundColor Cyan
