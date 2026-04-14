@@ -1,0 +1,7 @@
+$extractPath = "E:\EIA860\eia8602023"
+Get-ChildItem $extractPath -Filter "*.xlsx" | ForEach-Object {
+    Write-Host "`n$($_.Name):" -ForegroundColor Cyan
+    $pkg = Open-ExcelPackage -Path $_.FullName
+    $pkg.Workbook.Worksheets | ForEach-Object { Write-Host "  '$($_.Name)'" -ForegroundColor Yellow }
+    Close-ExcelPackage $pkg
+}
