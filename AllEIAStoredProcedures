@@ -1,0 +1,498 @@
+USE YOUR_DATABASE_NAME;
+GO
+
+-- ============================================================
+-- Update Log Table to Track Per-Table Results
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.columns 
+               WHERE object_id = OBJECT_ID('EIA.EIA860_LoadLog') 
+               AND name = 'TableName')
+BEGIN
+    ALTER TABLE EIA.EIA860_LoadLog
+    ADD TableName       NVARCHAR(100),
+        RowsInFile      INT,
+        TabsProcessed   NVARCHAR(255);
+    PRINT 'Updated EIA.EIA860_LoadLog with new columns';
+END
+GO
+
+-- ============================================================
+-- SP: Merge Utility
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860UtilityData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860UtilityData;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860UtilityData
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    MERGE EIA.EIA860_UtilityData AS target
+    USING EIA.EIA860_UtilityData_Staging AS source
+        ON target.ReportYear = source.ReportYear
+        AND target.UtilityId = source.UtilityId
+    WHEN MATCHED AND (
+        ISNULL(target.UtilityName,'')  != ISNULL(source.UtilityName,'')  OR
+        ISNULL(target.EntityType,'')   != ISNULL(source.EntityType,'')   OR
+        ISNULL(target.State,'')        != ISNULL(source.State,'')        OR
+        ISNULL(target.City,'')         != ISNULL(source.City,'')         OR
+        ISNULL(target.Zip,'')          != ISNULL(source.Zip,'')
+    )
+    THEN UPDATE SET
+        target.UtilityName   = source.UtilityName,
+        target.StreetAddress = source.StreetAddress,
+        target.City          = source.City,
+        target.State         = source.State,
+        target.Zip           = source.Zip,
+        target.Phone         = source.Phone,
+        target.EntityType    = source.EntityType,
+        target.LoadedAt      = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, StreetAddress,
+                 City, State, Zip, Phone, EntityType)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.StreetAddress, source.City, source.State, source.Zip,
+            source.Phone, source.EntityType)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    SELECT
+        ISNULL(@InsertCount,0)                              AS RowsInserted,
+        ISNULL(@UpdateCount,0)                              AS RowsUpdated,
+        (SELECT COUNT(*) FROM EIA.EIA860_UtilityData)       AS TotalRowsInTable;
+
+    TRUNCATE TABLE EIA.EIA860_UtilityData_Staging;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860UtilityData';
+
+-- ============================================================
+-- SP: Merge Generator
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860GeneratorData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860GeneratorData;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860GeneratorData
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    MERGE EIA.EIA860_GeneratorData AS target
+    USING EIA.EIA860_GeneratorData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.GeneratorStatus,'')     != ISNULL(source.GeneratorStatus,'')     OR
+        ISNULL(target.NameplateCapacityMW,'') != ISNULL(source.NameplateCapacityMW,'') OR
+        ISNULL(target.SummerCapacityMW,'')    != ISNULL(source.SummerCapacityMW,'')    OR
+        ISNULL(target.EnergySource1,'')       != ISNULL(source.EnergySource1,'')       OR
+        ISNULL(target.PrimeMover,'')          != ISNULL(source.PrimeMover,'')
+    )
+    THEN UPDATE SET
+        target.UtilityId           = source.UtilityId,
+        target.UtilityName         = source.UtilityName,
+        target.PlantName           = source.PlantName,
+        target.GeneratorStatus     = source.GeneratorStatus,
+        target.OperatingYear       = source.OperatingYear,
+        target.OperatingMonth      = source.OperatingMonth,
+        target.RetirementYear      = source.RetirementYear,
+        target.RetirementMonth     = source.RetirementMonth,
+        target.PrimeMover          = source.PrimeMover,
+        target.EnergySource1       = source.EnergySource1,
+        target.EnergySource2       = source.EnergySource2,
+        target.EnergySource3       = source.EnergySource3,
+        target.EnergySource4       = source.EnergySource4,
+        target.EnergySource5       = source.EnergySource5,
+        target.EnergySource6       = source.EnergySource6,
+        target.NameplateCapacityMW = source.NameplateCapacityMW,
+        target.SummerCapacityMW    = source.SummerCapacityMW,
+        target.WinterCapacityMW    = source.WinterCapacityMW,
+        target.LoadedAt            = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, County, GeneratorId, UnitCode, OwnershipType, Duct,
+                 Topping, SectorName, GeneratorStatus, OperatingYear,
+                 OperatingMonth, RetirementYear, RetirementMonth, PrimeMover,
+                 EnergySource1, EnergySource2, EnergySource3, EnergySource4,
+                 EnergySource5, EnergySource6, NameplateCapacityMW,
+                 SummerCapacityMW, WinterCapacityMW, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State, source.County,
+            source.GeneratorId, source.UnitCode, source.OwnershipType,
+            source.Duct, source.Topping, source.SectorName,
+            source.GeneratorStatus, source.OperatingYear, source.OperatingMonth,
+            source.RetirementYear, source.RetirementMonth, source.PrimeMover,
+            source.EnergySource1, source.EnergySource2, source.EnergySource3,
+            source.EnergySource4, source.EnergySource5, source.EnergySource6,
+            source.NameplateCapacityMW, source.SummerCapacityMW,
+            source.WinterCapacityMW, source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    SELECT
+        ISNULL(@InsertCount,0)                               AS RowsInserted,
+        ISNULL(@UpdateCount,0)                               AS RowsUpdated,
+        (SELECT COUNT(*) FROM EIA.EIA860_GeneratorData)      AS TotalRowsInTable;
+
+    TRUNCATE TABLE EIA.EIA860_GeneratorData_Staging;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860GeneratorData';
+
+-- ============================================================
+-- SP: Merge Wind
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860WindData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860WindData;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860WindData
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    MERGE EIA.EIA860_WindData AS target
+    USING EIA.EIA860_WindData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.TurbineManufacturer,'') != ISNULL(source.TurbineManufacturer,'') OR
+        ISNULL(target.NumberOfTurbines,'')    != ISNULL(source.NumberOfTurbines,'')    OR
+        ISNULL(target.RotorDiameter,'')       != ISNULL(source.RotorDiameter,'')
+    )
+    THEN UPDATE SET
+        target.TurbineManufacturer    = source.TurbineManufacturer,
+        target.TurbineModel           = source.TurbineModel,
+        target.NumberOfTurbines       = source.NumberOfTurbines,
+        target.TurbineRatedCapacityMW = source.TurbineRatedCapacityMW,
+        target.HubHeight              = source.HubHeight,
+        target.RotorDiameter          = source.RotorDiameter,
+        target.WindQualityClass       = source.WindQualityClass,
+        target.LoadedAt               = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, TurbineManufacturer, TurbineModel,
+                 NumberOfTurbines, TurbineRatedCapacityMW, HubHeight,
+                 RotorDiameter, WindQualityClass, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State,
+            source.GeneratorId, source.TurbineManufacturer, source.TurbineModel,
+            source.NumberOfTurbines, source.TurbineRatedCapacityMW,
+            source.HubHeight, source.RotorDiameter, source.WindQualityClass,
+            source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    SELECT
+        ISNULL(@InsertCount,0)                           AS RowsInserted,
+        ISNULL(@UpdateCount,0)                           AS RowsUpdated,
+        (SELECT COUNT(*) FROM EIA.EIA860_WindData)       AS TotalRowsInTable;
+
+    TRUNCATE TABLE EIA.EIA860_WindData_Staging;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860WindData';
+
+-- ============================================================
+-- SP: Merge Solar
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860SolarData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860SolarData;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860SolarData
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    MERGE EIA.EIA860_SolarData AS target
+    USING EIA.EIA860_SolarData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.SolarTechnology,'') != ISNULL(source.SolarTechnology,'') OR
+        ISNULL(target.DCNetCapacity,'')   != ISNULL(source.DCNetCapacity,'')   OR
+        ISNULL(target.TiltAngle,'')       != ISNULL(source.TiltAngle,'')
+    )
+    THEN UPDATE SET
+        target.SingleAxisTracking = source.SingleAxisTracking,
+        target.DualAxisTracking   = source.DualAxisTracking,
+        target.FixedTilt          = source.FixedTilt,
+        target.SolarTechnology    = source.SolarTechnology,
+        target.DCNetCapacity      = source.DCNetCapacity,
+        target.TiltAngle          = source.TiltAngle,
+        target.AzimuthAngle       = source.AzimuthAngle,
+        target.LoadedAt           = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, SingleAxisTracking, DualAxisTracking,
+                 FixedTilt, SolarTechnology, DCNetCapacity, TiltAngle,
+                 AzimuthAngle, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State,
+            source.GeneratorId, source.SingleAxisTracking,
+            source.DualAxisTracking, source.FixedTilt, source.SolarTechnology,
+            source.DCNetCapacity, source.TiltAngle, source.AzimuthAngle,
+            source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    SELECT
+        ISNULL(@InsertCount,0)                            AS RowsInserted,
+        ISNULL(@UpdateCount,0)                            AS RowsUpdated,
+        (SELECT COUNT(*) FROM EIA.EIA860_SolarData)       AS TotalRowsInTable;
+
+    TRUNCATE TABLE EIA.EIA860_SolarData_Staging;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860SolarData';
+
+-- ============================================================
+-- SP: Merge Storage
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860StorageData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860StorageData;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860StorageData
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    MERGE EIA.EIA860_StorageData AS target
+    USING EIA.EIA860_StorageData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.StorageTechnology,'') != ISNULL(source.StorageTechnology,'') OR
+        ISNULL(target.EnergyCapacityMWH,'') != ISNULL(source.EnergyCapacityMWH,'') OR
+        ISNULL(target.MaxChargeRateMW,'')   != ISNULL(source.MaxChargeRateMW,'')
+    )
+    THEN UPDATE SET
+        target.StorageTechnology    = source.StorageTechnology,
+        target.EnergyCapacityMWH    = source.EnergyCapacityMWH,
+        target.MaxChargeRateMW      = source.MaxChargeRateMW,
+        target.MaxDischargeRateMW   = source.MaxDischargeRateMW,
+        target.StorageEnclosureType = source.StorageEnclosureType,
+        target.LoadedAt             = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, StorageTechnology, EnergyCapacityMWH,
+                 MaxChargeRateMW, MaxDischargeRateMW, StorageEnclosureType,
+                 StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State,
+            source.GeneratorId, source.StorageTechnology,
+            source.EnergyCapacityMWH, source.MaxChargeRateMW,
+            source.MaxDischargeRateMW, source.StorageEnclosureType,
+            source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    SELECT
+        ISNULL(@InsertCount,0)                              AS RowsInserted,
+        ISNULL(@UpdateCount,0)                              AS RowsUpdated,
+        (SELECT COUNT(*) FROM EIA.EIA860_StorageData)       AS TotalRowsInTable;
+
+    TRUNCATE TABLE EIA.EIA860_StorageData_Staging;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860StorageData';
+
+-- ============================================================
+-- SP: Merge MultiFuel
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860MultiFuelData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860MultiFuelData;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860MultiFuelData
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    MERGE EIA.EIA860_MultiFuelData AS target
+    USING EIA.EIA860_MultiFuelData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.StatusTab   = source.StatusTab
+    WHEN MATCHED AND (
+        ISNULL(target.FuelSwitchCapable,'') != ISNULL(source.FuelSwitchCapable,'') OR
+        ISNULL(target.AltEnergySource1,'')  != ISNULL(source.AltEnergySource1,'')  OR
+        ISNULL(target.AltEnergySource2,'')  != ISNULL(source.AltEnergySource2,'')
+    )
+    THEN UPDATE SET
+        target.FuelSwitchCapable = source.FuelSwitchCapable,
+        target.AltEnergySource1  = source.AltEnergySource1,
+        target.AltEnergySource2  = source.AltEnergySource2,
+        target.AltEnergySource3  = source.AltEnergySource3,
+        target.LoadedAt          = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, FuelSwitchCapable, AltEnergySource1,
+                 AltEnergySource2, AltEnergySource3, StatusTab)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State,
+            source.GeneratorId, source.FuelSwitchCapable,
+            source.AltEnergySource1, source.AltEnergySource2,
+            source.AltEnergySource3, source.StatusTab)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    SELECT
+        ISNULL(@InsertCount,0)                                AS RowsInserted,
+        ISNULL(@UpdateCount,0)                                AS RowsUpdated,
+        (SELECT COUNT(*) FROM EIA.EIA860_MultiFuelData)       AS TotalRowsInTable;
+
+    TRUNCATE TABLE EIA.EIA860_MultiFuelData_Staging;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860MultiFuelData';
+
+-- ============================================================
+-- SP: Merge Owner
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860OwnerData' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860OwnerData;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860OwnerData
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @InsertCount INT = 0;
+    DECLARE @UpdateCount INT = 0;
+    DECLARE @MergeOutput TABLE (MergeAction NVARCHAR(10));
+
+    MERGE EIA.EIA860_OwnerData AS target
+    USING EIA.EIA860_OwnerData_Staging AS source
+        ON target.ReportYear   = source.ReportYear
+        AND target.PlantCode   = source.PlantCode
+        AND target.GeneratorId = source.GeneratorId
+        AND target.OwnerId     = source.OwnerId
+    WHEN MATCHED AND (
+        ISNULL(target.OwnershipPercent,'') != ISNULL(source.OwnershipPercent,'') OR
+        ISNULL(target.OwnerName,'')        != ISNULL(source.OwnerName,'')
+    )
+    THEN UPDATE SET
+        target.OwnerName        = source.OwnerName,
+        target.OwnerState       = source.OwnerState,
+        target.OwnershipPercent = source.OwnershipPercent,
+        target.LoadedAt         = GETDATE()
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (ReportYear, UtilityId, UtilityName, PlantCode, PlantName,
+                 State, GeneratorId, OwnerId, OwnerName, OwnerState,
+                 OwnershipPercent)
+    VALUES (source.ReportYear, source.UtilityId, source.UtilityName,
+            source.PlantCode, source.PlantName, source.State,
+            source.GeneratorId, source.OwnerId, source.OwnerName,
+            source.OwnerState, source.OwnershipPercent)
+    OUTPUT $action INTO @MergeOutput(MergeAction);
+
+    SELECT
+        @InsertCount = SUM(CASE WHEN MergeAction='INSERT' THEN 1 ELSE 0 END),
+        @UpdateCount = SUM(CASE WHEN MergeAction='UPDATE' THEN 1 ELSE 0 END)
+    FROM @MergeOutput;
+
+    SELECT
+        ISNULL(@InsertCount,0)                             AS RowsInserted,
+        ISNULL(@UpdateCount,0)                             AS RowsUpdated,
+        (SELECT COUNT(*) FROM EIA.EIA860_OwnerData)        AS TotalRowsInTable;
+
+    TRUNCATE TABLE EIA.EIA860_OwnerData_Staging;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860OwnerData';
+
+-- ============================================================
+-- SP: Master - Calls All Individual SPs
+-- ============================================================
+IF EXISTS (SELECT * FROM sys.procedures p JOIN sys.schemas s ON p.schema_id = s.schema_id
+           WHERE p.name = 'usp_MergeEIA860Master' AND s.name = 'EIA')
+    DROP PROCEDURE EIA.usp_MergeEIA860Master;
+GO
+CREATE PROCEDURE EIA.usp_MergeEIA860Master
+AS
+BEGIN
+    SET NOCOUNT ON;
+    EXEC EIA.usp_MergeEIA860PlantData;
+    EXEC EIA.usp_MergeEIA860UtilityData;
+    EXEC EIA.usp_MergeEIA860GeneratorData;
+    EXEC EIA.usp_MergeEIA860WindData;
+    EXEC EIA.usp_MergeEIA860SolarData;
+    EXEC EIA.usp_MergeEIA860StorageData;
+    EXEC EIA.usp_MergeEIA860MultiFuelData;
+    EXEC EIA.usp_MergeEIA860OwnerData;
+END
+GO
+PRINT 'Created: EIA.usp_MergeEIA860Master';
+
+-- ============================================================
+-- Verify All Stored Procedures
+-- ============================================================
+SELECT
+    s.name      AS SchemaName,
+    p.name      AS ProcedureName,
+    p.create_date AS CreatedDate
+FROM sys.procedures p
+JOIN sys.schemas s ON p.schema_id = s.schema_id
+WHERE s.name = 'EIA'
+ORDER BY p.name;
+GO
+
+PRINT '============================================';
+PRINT 'All stored procedures created successfully!';
+PRINT '============================================';
