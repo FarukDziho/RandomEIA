@@ -46,7 +46,7 @@ function Write-EIALog {
     if($null -eq $tableName){$tableName=""}
     if($null -eq $scriptVersion){$scriptVersion=""}
     $errorMessage=$errorMessage.Replace("'","''")
-    $machineName=$env:COMPUTERNAME
+    $machineName=if($env:COMPUTERNAME){$env:COMPUTERNAME}else{"UNKNOWN"}
     $runByUser=try{[System.Security.Principal.WindowsIdentity]::GetCurrent().Name.Replace("'","''")}catch{"UNKNOWN"}
     $safeUrl=$downloadUrl.Replace("'","''")
     $safePath=$filePath.Replace("'","''")
@@ -118,13 +118,18 @@ function Load-Staging {
 
 function Invoke-MergeSP {
     param([System.Data.SqlClient.SqlConnection]$conn,[string]$spName)
-    $cmd=New-Object System.Data.SqlClient.SqlCommand("EXEC $spName",$conn)
-    $cmd.CommandTimeout=300
-    $reader=$cmd.ExecuteReader()
-    $ri=0;$ru=0;$tr=0
-    if($reader.Read()){$ri=[int]$reader["RowsInserted"];$ru=[int]$reader["RowsUpdated"];$tr=[int]$reader["TotalRowsInTable"]}
-    $reader.Close()
-    return @{RowsInserted=$ri;RowsUpdated=$ru;TotalRows=$tr}
+    try {
+        $cmd=New-Object System.Data.SqlClient.SqlCommand("EXEC $spName",$conn)
+        $cmd.CommandTimeout=300
+        $reader=$cmd.ExecuteReader()
+        $ri=0;$ru=0;$tr=0
+        if($reader.Read()){$ri=[int]$reader["RowsInserted"];$ru=[int]$reader["RowsUpdated"];$tr=[int]$reader["TotalRowsInTable"]}
+        $reader.Close()
+        return @{RowsInserted=$ri;RowsUpdated=$ru;TotalRows=$tr}
+    } catch {
+        Write-Warning "Merge SP '$spName' failed: $_"
+        return @{RowsInserted=0;RowsUpdated=0;TotalRows=0}
+    }
 }
 
 function Get-EIAZipFile {
@@ -173,6 +178,30 @@ function Get-ExcelSheetNames {
         Close-ExcelPackage $pkg
         return $sheets
     } catch {Write-Warning "Could not read sheet names";return @()}
+}
+
+# ============================================================
+# Find-Tab: Flexible sheet-name matching
+# Tries exact match first, then trimmed, then wildcard contains
+# ============================================================
+function Find-Tab {
+    param([string[]]$SheetNames,[string]$TabName)
+    if($null -eq $SheetNames -or $SheetNames.Count -eq 0){return $null}
+    # 1. Exact match
+    $match=$SheetNames|Where-Object{$_ -eq $TabName}|Select-Object -First 1
+    if($match){return $match}
+    # 2. Trimmed match
+    $match=$SheetNames|Where-Object{$_.Trim() -eq $TabName}|Select-Object -First 1
+    if($match){return $match}
+    # 3. Wildcard contains (handles "Retired and Canceled" vs "Retired & Canceled" etc.)
+    $match=$SheetNames|Where-Object{$_ -like "*$TabName*"}|Select-Object -First 1
+    if($match){return $match}
+    # 4. For "Retired and Canceled", also try matching just "Retired"
+    if($TabName -like "*Retired*"){
+        $match=$SheetNames|Where-Object{$_ -like "*Retired*" -or $_ -like "*Cancel*"}|Select-Object -First 1
+        if($match){return $match}
+    }
+    return $null
 }
 
 function Find-EIAFile {
