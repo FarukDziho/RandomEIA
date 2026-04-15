@@ -1,0 +1,121 @@
+-- ============================================================
+-- EIA API Data Load - Electricity RTO Fuel-Type (Hourly Gen)
+-- Run this once to create the target objects
+-- ============================================================
+
+-- 1) Create a database (or use an existing one)
+-- USE master;
+-- CREATE DATABASE EIA_Data;
+-- GO
+
+USE EIA_Data;  -- << change to your database name
+GO
+
+-- 2) Table for hourly generation by fuel type
+IF OBJECT_ID('dbo.EIA_RTO_FuelType', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.EIA_RTO_FuelType
+    (
+        Id              INT IDENTITY(1,1) PRIMARY KEY,
+        Period          VARCHAR(20)     NOT NULL,   -- e.g. '2025-04-14T08' (hourly)
+        PeriodUTC       DATETIME2       NULL,       -- parsed datetime for easy querying
+        Respondent      VARCHAR(20)     NOT NULL,   -- BA code, e.g. 'ERCO', 'US48'
+        RespondentName  VARCHAR(200)    NULL,       -- e.g. 'Electric Reliability Council of Texas, Inc.'
+        FuelType        VARCHAR(10)     NOT NULL,   -- e.g. 'NG', 'SUN', 'WND', 'NUC'
+        FuelTypeName    VARCHAR(100)    NULL,       -- e.g. 'Natural gas', 'Solar'
+        ValueMWh        DECIMAL(18,2)   NULL,       -- generation in megawatthours
+        LoadedDateUTC   DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+END
+GO
+
+-- 3) Indexes for common query patterns
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_RTO_FuelType_Period_Respondent')
+BEGIN
+    CREATE NONCLUSTERED INDEX IX_RTO_FuelType_Period_Respondent
+        ON dbo.EIA_RTO_FuelType (PeriodUTC, Respondent, FuelType)
+        INCLUDE (FuelTypeName, ValueMWh);
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_RTO_FuelType_Respondent_Fuel')
+BEGIN
+    CREATE NONCLUSTERED INDEX IX_RTO_FuelType_Respondent_Fuel
+        ON dbo.EIA_RTO_FuelType (Respondent, FuelType, PeriodUTC)
+        INCLUDE (ValueMWh);
+END
+GO
+
+-- 4) Merge procedure: upsert so re-runs don't create duplicates
+CREATE OR ALTER PROCEDURE dbo.usp_Upsert_EIA_RTO_FuelType
+    @json NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH src AS
+    (
+        SELECT
+            j.[period]                                          AS Period,
+            -- Parse '2025-04-14T08' into a proper datetime
+            TRY_CAST(
+                REPLACE(j.[period], 'T', ' ') + ':00:00'
+            AS DATETIME2)                                       AS PeriodUTC,
+            j.respondent                                        AS Respondent,
+            j.[respondent-name]                                 AS RespondentName,
+            j.fueltype                                          AS FuelType,
+            j.[type-name]                                       AS FuelTypeName,
+            TRY_CAST(j.[value] AS DECIMAL(18,2))                AS ValueMWh
+        FROM OPENJSON(@json, '$.response.data')
+        WITH
+        (
+            [period]            VARCHAR(20)     '$.period',
+            respondent          VARCHAR(20)     '$.respondent',
+            [respondent-name]   VARCHAR(200)    '$."respondent-name"',
+            fueltype            VARCHAR(10)     '$.fueltype',
+            [type-name]         VARCHAR(100)    '$."type-name"',
+            [value]             VARCHAR(50)     '$.value'
+        ) j
+    )
+    MERGE dbo.EIA_RTO_FuelType AS tgt
+    USING src
+        ON  tgt.Period     = src.Period
+        AND tgt.Respondent = src.Respondent
+        AND tgt.FuelType   = src.FuelType
+    WHEN MATCHED THEN
+        UPDATE SET
+            tgt.ValueMWh      = src.ValueMWh,
+            tgt.LoadedDateUTC = SYSUTCDATETIME()
+    WHEN NOT MATCHED THEN
+        INSERT (Period, PeriodUTC, Respondent, RespondentName,
+                FuelType, FuelTypeName, ValueMWh)
+        VALUES (src.Period, src.PeriodUTC, src.Respondent, src.RespondentName,
+                src.FuelType, src.FuelTypeName, src.ValueMWh);
+
+    PRINT CONCAT('Rows affected: ', @@ROWCOUNT);
+END
+GO
+
+-- ============================================================
+-- SAMPLE QUERIES (run after first load)
+-- ============================================================
+
+-- Latest 20 rows
+-- SELECT TOP 20 * FROM dbo.EIA_RTO_FuelType ORDER BY PeriodUTC DESC;
+
+-- ERCOT generation by fuel type for the last 24 hours
+-- SELECT FuelTypeName, SUM(ValueMWh) AS TotalMWh
+-- FROM   dbo.EIA_RTO_FuelType
+-- WHERE  Respondent = 'ERCO'
+--   AND  PeriodUTC >= DATEADD(HOUR, -24, SYSUTCDATETIME())
+-- GROUP BY FuelTypeName
+-- ORDER BY TotalMWh DESC;
+
+-- Daily generation mix for a specific BA
+-- SELECT CAST(PeriodUTC AS DATE) AS GenDate,
+--        FuelTypeName,
+--        SUM(ValueMWh) AS DailyMWh
+-- FROM   dbo.EIA_RTO_FuelType
+-- WHERE  Respondent = 'ERCO'
+-- GROUP BY CAST(PeriodUTC AS DATE), FuelTypeName
+-- ORDER BY GenDate DESC, DailyMWh DESC;
