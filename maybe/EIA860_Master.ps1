@@ -1,39 +1,53 @@
 # ============================================================
-# EIA860_Master.ps1
-# Runs all EIA-860 ETL scripts in sequence
-# Version 2.3 FIXED
+# EIA860_Master.ps1 - Simple orchestrator
+# Downloads ZIP once, then runs each script with ExtractPath
+# No shared module needed - each script is self-contained
 # ============================================================
 param(
     [int]$ReportYear  = (Get-Date).Year - 1,
     [bool]$ManualMode = $false
 )
 
-$masterStart = Get-Date
-. "E:\Scripts\EIA860_Shared.ps1"
+$masterStart   = Get-Date
+$downloadPath  = "E:\EIA860"
+$zipFile       = "$downloadPath\eia860$ReportYear.zip"
+$extractPath   = "$downloadPath\eia860$ReportYear"
+$latestYear    = 2024
 
-$downloadUrl = Get-EIADownloadUrl $ReportYear
-$zipFile     = "$global:downloadPath\eia860$ReportYear.zip"
-$extractPath = "$global:downloadPath\eia860$ReportYear"
-
-Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host " EIA-860 MASTER ETL - ALL TABLES"            -ForegroundColor Cyan
-Write-Host " Report Year: $ReportYear"                   -ForegroundColor Cyan
-Write-Host " Manual Mode: $ManualMode"                   -ForegroundColor Cyan
-Write-Host " Server:      $global:sqlServer"             -ForegroundColor Cyan
-Write-Host " Database:    $global:sqlDatabase"           -ForegroundColor Cyan
-Write-Host " Started:     $masterStart"                  -ForegroundColor Cyan
-Write-Host "=============================================" -ForegroundColor Cyan
-
-Import-ExcelModule
-
-$ok = Get-EIAZipFile -ReportYear $ReportYear -ManualMode $ManualMode `
-      -downloadUrl $downloadUrl -zipFile $zipFile -extractPath $extractPath
-
-if (-not $ok) {
-    Write-Error "Failed to download/extract ZIP. Aborting."
-    exit 1
+if ($ReportYear -eq $latestYear) {
+    $downloadUrl = "https://www.eia.gov/electricity/data/eia860/xls/eia860$ReportYear.zip"
+} else {
+    $downloadUrl = "https://www.eia.gov/electricity/data/eia860/archive/xls/eia860$ReportYear.zip"
 }
 
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host " EIA-860 MASTER ETL"                          -ForegroundColor Cyan
+Write-Host " Report Year: $ReportYear"                    -ForegroundColor Cyan
+Write-Host " Manual Mode: $ManualMode"                    -ForegroundColor Cyan
+Write-Host "=============================================" -ForegroundColor Cyan
+
+# --- Download + Extract once ---
+if ($ManualMode) {
+    if (-not (Test-Path $zipFile)) { Write-Error "ZIP not found: $zipFile"; exit 1 }
+} else {
+    Write-Host "Downloading EIA-860 $ReportYear..." -ForegroundColor Cyan
+    if (-not (Test-Path $downloadPath)) { New-Item -ItemType Directory -Path $downloadPath -Force | Out-Null }
+    if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile -ErrorAction Stop
+        $sz = (Get-Item $zipFile).Length
+        Write-Host "Downloaded: $([math]::Round($sz/1MB,2)) MB" -ForegroundColor Green
+        if ($sz -lt 1MB) { Write-Error "ZIP too small - likely blocked"; exit 1 }
+    } catch { Write-Error "Download failed: $_"; exit 1 }
+}
+
+Write-Host "Extracting..." -ForegroundColor Cyan
+if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
+Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+Write-Host "Extracted to: $extractPath" -ForegroundColor Green
+Get-ChildItem $extractPath -Recurse -File | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor Gray }
+
+# --- Run each script ---
 $scripts = @(
     @{ Name = "EIA860_Plant.ps1";     Label = "Plant"     },
     @{ Name = "EIA860_Utility.ps1";   Label = "Utility"   },
@@ -46,53 +60,41 @@ $scripts = @(
 )
 
 $results = @()
-$savedErrorPref = $ErrorActionPreference
 
 foreach ($s in $scripts) {
     $scriptPath  = "E:\Scripts\$($s.Name)"
     $scriptStart = Get-Date
-    Write-Host "`n--- Running $($s.Label) ---" -ForegroundColor Yellow
+
+    Write-Host "`n--- $($s.Label) ---" -ForegroundColor Yellow
 
     if (-not (Test-Path $scriptPath)) {
-        Write-Warning "Script not found: $scriptPath"
-        $results += [PSCustomObject]@{ Label = $s.Label; Status = "Not Found"; Duration = 0 }
+        Write-Warning "Not found: $scriptPath"
+        $results += [PSCustomObject]@{ Label=$s.Label; Status="Not Found"; Duration=0 }
         continue
     }
 
     try {
-        # Force all errors to be terminating so try/catch actually works
         $ErrorActionPreference = "Stop"
         & $scriptPath -ReportYear $ReportYear -ManualMode $false -ExtractPath $extractPath
-        $status = "Success"
+        $results += [PSCustomObject]@{ Label=$s.Label; Status="Success"; Duration=[int](New-TimeSpan -Start $scriptStart -End (Get-Date)).TotalSeconds }
     } catch {
-        $status = "Failed: $_"
         Write-Warning "$($s.Name) failed: $_"
+        $results += [PSCustomObject]@{ Label=$s.Label; Status="FAILED"; Duration=[int](New-TimeSpan -Start $scriptStart -End (Get-Date)).TotalSeconds }
     } finally {
-        $ErrorActionPreference = $savedErrorPref
-    }
-
-    $results += [PSCustomObject]@{
-        Label    = $s.Label
-        Status   = $status
-        Duration = [int](New-TimeSpan -Start $scriptStart -End (Get-Date)).TotalSeconds
+        $ErrorActionPreference = "Continue"
     }
 }
 
-$totalDuration = [int](New-TimeSpan -Start $masterStart -End (Get-Date)).TotalSeconds
-$successCount  = @($results | Where-Object { $_.Status -eq "Success" }).Count
-$failCount     = @($results | Where-Object { $_.Status -ne "Success" }).Count
+# --- Summary ---
+$totalDur = [int](New-TimeSpan -Start $masterStart -End (Get-Date)).TotalSeconds
 
 Write-Host "`n=============================================" -ForegroundColor Cyan
-Write-Host " EIA-860 MASTER LOAD COMPLETE"                -ForegroundColor Cyan
-Write-Host " Successful: $successCount / $($results.Count)" -ForegroundColor Green
-Write-Host " Failed:     $failCount"                      -ForegroundColor $(if ($failCount -gt 0) { "Red" } else { "Green" })
+Write-Host " MASTER LOAD COMPLETE"                         -ForegroundColor Cyan
 Write-Host "---------------------------------------------" -ForegroundColor Cyan
-
 foreach ($r in $results) {
-    $color = if ($r.Status -eq "Success") { "Green" } elseif ($r.Status -like "Skipped*") { "Yellow" } else { "Red" }
+    $color = if ($r.Status -eq "Success") { "Green" } else { "Red" }
     Write-Host " $($r.Label.PadRight(12)) $($r.Status.PadRight(12)) $($r.Duration)s" -ForegroundColor $color
 }
-
 Write-Host "---------------------------------------------" -ForegroundColor Cyan
-Write-Host " Total Duration: $totalDuration seconds"      -ForegroundColor White
+Write-Host " Total: $totalDur seconds"                     -ForegroundColor White
 Write-Host "=============================================" -ForegroundColor Cyan
