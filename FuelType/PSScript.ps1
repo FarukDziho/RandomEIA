@@ -19,7 +19,7 @@
 # ── CONFIGURATION ──────────────────────────────────────────────
 $EIA_API_KEY    = "YOUR_API_KEY_HERE"          # <── paste your key
 $SQL_SERVER     = "localhost"                   # <── your SQL Server instance
-$SQL_DATABASE   = "EIA_Data"                   # <── your database name
+$SQL_DATABASE   = "Your Database"                # <── your database name
 $LOG_PATH       = "C:\Logs\EIA_RTO_Load.log"   # <── log file location
 
 # Balancing Authority to pull (common codes below):
@@ -65,7 +65,7 @@ function Send-JsonToSql {
     $conn.Open()
 
     $cmd             = $conn.CreateCommand()
-    $cmd.CommandText = "EXEC dbo.usp_Upsert_EIA_RTO_FuelType @json = @json"
+    $cmd.CommandText = "EXEC EIA_Test.usp_Upsert_EIA_RTO_FuelType @json = @json"
     $cmd.CommandTimeout = 120
 
     $param       = $cmd.Parameters.Add("@json", [System.Data.SqlDbType]::NVarChar, -1)
